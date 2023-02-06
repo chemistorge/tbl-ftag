@@ -1,0 +1,29 @@
+#! /usr/bin/env bash
+# load files onto all connected Raspberry Pi Pico devices
+
+if [ "$1" != "" ]
+then
+    # load a single Pico
+    PORT=$1
+else
+    # load anything that looks like a Pico
+    for p in `ls /dev/tty.usb*`
+    do
+        ./load_pico $p
+    done
+    exit 0  # all done
+fi
+
+echo "copying files to pico ${PORT}..."
+rshell -p ${PORT} --buffer-size 512 <<HERE
+cp dttk.py /pyboard
+cp ftag.py /pyboard
+cp ftag_pico.py /pyboard
+cp perf.py /pyboard
+cp tasking.py /pyboard
+cp test35k.jpg /pyboard
+cp testdata.txt /pyboard
+rm /pyboard/received.jpg
+rm /pyboard/received.txt
+HERE
+echo done: ${PORT}
