@@ -28,41 +28,52 @@ def files() -> None:
     show_dir("cwd", ".")
 
 def help() -> None:
-    print("PICO file transfer agent demonstration")
+    print("FTAG File Transfer Agent demonstrator")
     print("  ftag.help()     - show this help message")
     print("  ftag.files()    - list files in local file system")
     print("  ftag.loopback() - send and receive via UART0 loopback")
     print("  ftag.send()     - send a test file via UART0")
     print("  ftag.receive()  - receive a test file via UART0")
 
+#Throttled send, by default.
 # experiments show that about 11pps doesn't stress the receiver too much
 def send(filename:str=TX_FILENAME, pps:int=11) -> None:
     print("sending:%s" % filename)
+    sender = send_file_task(filename)
     if pps is not None:
         print("  throttled at %d PPS" % pps)
-        send_task = send_file_task(filename).tick
         while True:
             start_ms = dttk.deps.time_ms()
-            if not send_task(): break  # finished
+            if not sender.tick(): break  # finished
             if pps is not None:
                time_per_packet_ms = dttk.deps.time_ms() - start_ms
                delay_time_ms = int((1000 - (time_per_packet_ms * pps)) / pps)
                dttk.deps.time_sleep_ms(delay_time_ms)
     else:
-        send_file_task(filename).run()
+        sender.run()
 
+    print_stats("tx", sender)
     print("send complete")
 
 def receive(filename:str=RX_FILENAME) -> None:
     print("receiving:%s" % filename)
-    receive_file(filename)
+    receiver = receive_file_task(filename)
+    receiver.run()
+
+    print_stats("rx", receiver)
+
     print("receive complete")
 
 def loopback(tx_filename:str=TX_FILENAME, rx_filename:str=RX_FILENAME) -> None:
     print("loopback %s->%s running" % (tx_filename, rx_filename))
     sender   = send_file_task(tx_filename)
     receiver = receive_file_task(rx_filename)
+
     tasking.run_all([sender, receiver])
+
+    print_stats("tx", sender)
+    print_stats("rx", receiver)
+
     print("loopback complete")
 
 if __name__ == "__main__":

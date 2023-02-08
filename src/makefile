@@ -5,6 +5,7 @@
 what:
 	@echo makefile: for ftag testing
 	@echo   make clean         - cleanup all generated files
+	@echo   make tests         - make and run all auto tests
 	@echo   make test_loopback - run a host loopback test via InMemoryRadio
 	@echo   make test_pipeline - run a host pipeline test via stdstreams
 
@@ -53,6 +54,9 @@ test_pipeline_hex:
 test_pipeline_bin_noise:
 	$(SEND) $(TX_FILE) | $(NOISE) --prob=1 --ebit=1,9 | $(RECEIVE) -p $(RX_FILE)
 	$(DIFF) -q $(TX_FILE) $(RX_FILE)
+
+.PHONY: tests
+tests: test_loopback test_pipeline
 
 #----- UTILITIES ---------------------------------------------------------------
 .PHONY: clean

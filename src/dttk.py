@@ -365,21 +365,20 @@ def hashstr(the_hash) -> str:
     else:
         return hexstr(the_hash)
 
+def sha256_of_file(filename: str) -> bytes:
+    """Calculate SHA256, as if we did:shasum -a 256 filename.bin"""
+    hasher = deps.hashlib_sha256()
+    with open(filename, "rb") as f:
+        while True:  #NOTE: pico iter() works differently
+            block = f.read(512)  # typical cluster size on a SDcard
+            if not block: break  #EOF
+            hasher.update(block)
+    digest = hasher.digest()
+    ##assert len(digest) == 32
+    return digest
+
 def get_file_info(filename:str) -> tuple: # (filesize:int, sha256:bytes)
     """File size and SHA256 of a file"""
-
-    def sha256_of_file(filename2: str):
-        """Calculate SHA256, as if we did:shasum -a 256 filename.bin"""
-        hasher = deps.hashlib_sha256()
-        with open(filename2, "rb") as f:
-            while True:  #NOTE: pico iter() works differently
-                block = f.read(512)  # typical cluster size on a SDcard
-                if not block: break  #EOF
-                hasher.update(block)
-        digest = hasher.digest()
-        ##assert len(digest) == 32
-        return digest
-
     sz     = deps.filesize(filename)
     sha256 = sha256_of_file(filename)
     return sz, sha256
@@ -554,76 +553,89 @@ class FileReader:
         if len(data) == 0:  return None  #EOF
         return data
 
-class FileWriter:
+class CachedFileWriter:
     """Write a random access disk file, streamed, or at any position"""
-    def __init__(self):
+    #NOTE: guaranteed memory, but slow copy process
+    PREALLOC  = 0 # cache but pre-alloc all required bufs
+    #NOTE: unguaranteed memory, but fast copy process
+    ON_DEMAND = 1 # cache and create new RAM block on each write()
+
+    def __init__(self, mode=ON_DEMAND):
         self._name = None
+        self._file = None
         self._bufs  = None
         #NOTE: this 3-tuple might make a nice class abstraction
         self._blocksz = None
         self._nblocks = None
         self._lastblock = None
+        self._mode = mode
 
-    def start(self, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
+    def start(self, name:str, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
         """Start a buffer for a file of this size"""
         # The Pico doesn't allow large block sizes bigger than about 1K at a time,
         # so we allocate a chain of blocks that align with the receive block size
         # as that is always quite naturally small.
         assert self._name is None, "start() when already running"
+        self._name = name
 
-        # pre-allocated buffer scheme (but copy process is slow)
-        ##gc.collect()
-        ##self._bufs = [bytearray(blocksz) for _ in range(nblocks)]
-        ##if lastblock != 0: self._bufs.append(bytearray(lastblock))
+        if self._mode == self.PREALLOC:
+            # pre-allocated buffer scheme (but copy process is slow)
+            gc.collect()
+            self._bufs = [bytearray(blocksz) for _ in range(nblocks)]
+            if lastblock != 0: self._bufs.append(bytearray(lastblock))
 
-        # allocate on demand buffer scheme (copy fast, but might get MemoryError later)
-        # allocate empty slots so we can fast index later
-        self._bufs = [None for _ in range(nblocks)]
-        if lastblock != 0: self._bufs.append(None)
+        elif self._mode == self.ON_DEMAND:
+            # allocate on demand buffer scheme (copy fast, but might get MemoryError later)
+            # allocate empty slots so we can fast index later
+            self._bufs = [None for _ in range(nblocks)]
+            if lastblock != 0: self._bufs.append(None)
 
         self._blocksz = blocksz
         self._nblocks = nblocks
         self._lastblock = lastblock
-        # can now use write() whenever required
 
-    #NOTE: this should be a blockno interface really
+    #NOTE: this should be a blockno interface really, as we have blocks in start()
     def write(self, data:Buffer or None, offset:int or None=None) -> None:
-        """Write new data to the file"""
-        if self._bufs is None:
-            # this might actually happen in real life, so don't assert
-            deps.message("ignoring data before META_START message, size not yet known")
-        elif data is None:  # EOF
-            pass  # nothing we can do, filename not known.
-        elif len(data) == 0:  #NODATA
-            pass  # nothing we can do, filename not known: self.snapshot()?
-        else:
-            blockno  = int(offset / self._blocksz)  # index into buffer chain
-            residual = offset % self._blocksz
-            if residual != 0:
-                raise ValueError("offset alignment error %d does not align to %d" % (offset, self._blocksz))
+        """A new data block has arrived, cache or write it to the file"""
+        if data is None:      return  # EOF
+        if len(data) is None: return  #NODATA
 
-            #PLAN-A pre-allocated buffer scheme (slow copy, but memory guaranteed)
-            #src_buf   = data._buf
-            #src_len   = len(data)
-            #dst_buf = self._bufs[blockno]
-            #dst_len = len(dst_buf)  # size of pre-allocated bytearray (lastblock might be smaller)
+        blockno  = int(offset / self._blocksz)  # index into buffer chain
+        residual = offset % self._blocksz
+        if residual != 0:
+            raise ValueError("offset alignment error %d does not align to %d" % (offset, self._blocksz))
 
-            #if src_len != dst_len:
-            #    raise ValueError("Block size mismatch: incoming:%d store:%d" % (src_len, dst_len))
-            #s = data._start  # remember there might be a header offset
+        if self._mode == self.PREALLOC:
+            if self._bufs is None:
+                # this might actually happen in real life, so don't assert
+                deps.message("warning: ignoring data before META_START message, size not yet known")
+                return
 
-            #for d in range(dst_len):
-            #    dst_buf[d] = src_buf[s]
-            #    s += 1
+            # pre-allocated buffer scheme (slow copy, but memory guaranteed)
+            src_buf   = data._buf
+            src_len   = len(data)
+            dst_buf = self._bufs[blockno]
+            dst_len = len(dst_buf)  # size of pre-allocated bytearray (lastblock might be smaller)
 
-            #PLAN-B fast-copy on demand scheme (but might get MemoryError)
+            if src_len != dst_len:
+               raise ValueError("Block size mismatch: incoming:%d store:%d" % (src_len, dst_len))
+            s = data._start  # remember there might be a header offset
+
+            #NOTE: use new slice notation copy here dst_buf[:dst_len] = src_buf[data._start:data._end]
+            #NOTE: does rhs slice create a temporary copy though? But copy still will be quicker
+            for d in range(dst_len):
+               dst_buf[d] = src_buf[s]
+               s += 1
+
+        elif self._mode == self.ON_DEMAND:
+            if self._bufs is None:
+                # this might actually happen in real life, so don't assert
+                deps.message("warning: ignoring data before META_START message, size not yet known")
+                return
+
+            # fast-copy on demand scheme (but might get MemoryError)
             #NOTE: introduce the new class Buffer(bytearray) pattern instead
             self._bufs[blockno] = data._buf[data._start:data._end]  # slice takes a copy
-
-    def snapshot(self) -> None:
-        """Save current buffer to somewhere persistent"""
-        # placeholder for future work
-        assert False, "UNIMPLEMENTED snapshot()"
 
     def get_sha256(self) -> bytes:
         """Sha256 sum the buf, for integrity checking"""
@@ -640,21 +652,78 @@ class FileWriter:
     def _invalidate(self):
         """Invalidate and delete any stored state"""
         self._bufs = None  # the whole buf chain will gc.collect
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._name = None
         gc.collect()
 
-    def commit(self, name:str) -> None:
-        """Commit current buffer to file, and cleanup"""
+    def commit(self) -> None:
+        """Commit any cached data, and cleanup"""
         assert self._bufs is not None, "commit() with empty buffs"
-        f = open(name, "wb")  # exception if fails
+        assert self._name is not None, "commit() with no named file"
+        assert self._file is None, "commit() with already-open file"
+        self._file = open(self._name, "wb")  # exception if fails
         for buf in self._bufs:
-            f.write(buf)
-        f.close()
-        #IDEA: could sha256 again here to make sure write worked ok?
+            self._file.write(buf)
+
         self._invalidate()
 
     def abort(self) -> None:
-        """Abort the current buffer and cleanup"""
+        """Abort the current transfer and cleanup"""
         self._invalidate()
+
+class ImmediateFileWriter:
+    """Write a random access disk file, streamed, or at any position"""
+    TEMP_NAME = "_INPROGRESS.tmp"  #NOTE: generate this name to be unique
+
+    def __init__(self):
+        self._name = None
+        self._file = None
+        #NOTE: this 3-tuple might make a nice class abstraction
+        self._blocksz = None
+        self._nblocks = None
+        self._lastblock = None
+
+    def start(self, name:str, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
+        """Start a buffer for a file of this size"""
+        # The Pico doesn't allow large block sizes bigger than about 1K at a time,
+        # so we allocate a chain of blocks that align with the receive block size
+        # as that is always quite naturally small.
+        assert self._name is None, "start() - already started"
+        self._file      = open(self.TEMP_NAME, "wb")  # exception if can't create file
+        self._name      = name
+        self._blocksz   = blocksz
+        self._nblocks   = nblocks
+        self._lastblock = lastblock
+
+    #NOTE: this should be a blockno interface really, as we have blocks in start()
+    def write(self, data:Buffer or None, offset:int or None=None) -> None:
+        """A new data block has arrived, cache or write it to the file"""
+        assert self._file is not None, "write() - file is not open"
+        if data is None:  return # EOF
+        elif len(data) == 0:  return # NODATA
+
+        self._file.seek(offset)
+        data.read_with(self._file.write)
+
+    def get_sha256(self) -> bytes:
+        """Get the sha256 of the temporary file, for integrity check"""
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        return sha256_of_file(self.TEMP_NAME)
+
+    def commit(self) -> None:
+        """Commit the temporary file by renaming it to the final file"""
+        ##try:
+        ##    deps.os_unlink(self._name)  # exception if can't delete
+        ##except FileNotFoundError: pass
+        deps.os_rename(self.TEMP_NAME, self._name)  # exception if can't rename
+
+    def abort(self) -> None:
+        """Abort the current transfer and cleanup"""
+        deps.os_unlink(self.TEMP_NAME)  # exception if can't delete
 
 
 class Link:
@@ -692,7 +761,7 @@ class Link:
                 else:
                     hlist = self._reg_table[selector]
                     if handler_fn in hlist:
-                        deps.message("warning:sel(%s) already registered, ignoring add" % str(selector))
+                        deps.message("warning: sel(%s) already registered, ignoring add" % str(selector))
                         return False  # NOT DONE
 
                 hlist.append(handler_fn)
@@ -701,7 +770,7 @@ class Link:
         else:
             #DELETE
             if not selector in self._reg_table:
-                deps.message("warning:sel(%s) not registered, ignoring delete" % str(selector))
+                deps.message("warning: sel(%s) not registered, ignoring delete" % str(selector))
                 return False  # NOT DONE
 
             hlist = self._reg_table[selector]
@@ -716,7 +785,7 @@ class Link:
                 except ValueError:
                     #NOTE: this gives a warning only on Pico (<bound_method>)
                     #I think function hashing works differently on Pico
-                    ##deps.message("warning:sel(%s) not registered for(%s), ignoring delete" % (str(selector), str(handler_fn)))
+                    ##deps.message("warning: sel(%s) not registered for(%s), ignoring delete" % (str(selector), str(handler_fn)))
                     return False  # NOT DONE
 
             else: # None, delete ALL registrations for this channel
@@ -861,14 +930,14 @@ class Packetiser(Link):
                 if nb is None:  # EOF on receive link
                     # EOF means we didn't see an ending sync, so trash partial buf
                     #NOTE: need to count this as an 'interesting event'
-                    deps.message("pkt:EOF(None)")
+                    ##deps.message("pkt:EOF(None)")
                     user_buf.reset()
                     return None  # EOF
                 # might validly be partially processed data in user_buf
                 # so user must pass that back in again next time to 'finish it off'
                 if nb == 0:
                     assert not wait, "got nb0 when wait=True"
-                    deps.message("pkt:NODATA(0)")
+                    ##deps.message("pkt:NODATA(0)")
                     return 0  # NODATA (yet), but might be partial in rx_buf
 
             # process bytes in _rx_buf
@@ -1028,7 +1097,7 @@ class HexStreamReader(StreamReader):
             return None # EOF
         if len(line) < max_len:  self._is_eof = True
 
-        bin_data = hex_to_bin(deps.bytes_to_str(line))
+        bin_data = hex_to_bin(deps.decode_to_str(line))
         return bin_data
 
 class HexStreamWriter(StreamWriter):
@@ -1125,7 +1194,7 @@ class LinkSender(Link):
         # length byte not included in length byte
         lenbyte = len(data) + (self.PROTOCOL_OVERHEAD-1)
         if lenbyte > 255:
-            deps.message("error:data too long, got len:%d" % lenbyte)
+            deps.message("error: data too long, got len:%d" % lenbyte)
             return
 
         # HEADER len, seqno, channel, blockno(u16)
@@ -1395,6 +1464,10 @@ class Sender:
         """Run to completion"""
         while self.tick(): pass
 
+    def get_stats(self) -> str:
+        """Get the transfer stats"""
+        return str(self._stats)
+
     #IDEA: could this be delegated to the block manager as an algo?
     def choose_next_block(self) -> tuple: # of (blockno:int, repno:int)
         """A place to slot in a block chooser/repeater algorithm"""
@@ -1599,13 +1672,17 @@ class Receiver:
         """Handle any data that arrives after link is closed"""
         ##assert isinstance(data, Buffer), "got:%s" % str(type(data))
         _ = data  # argused
-        deps.message("warning:new data arrived after writer closed")
+        deps.message("warning: new data arrived after writer closed")
 
     def get_percent(self) -> int or None:
         if self._blockmap is not None:
             return self._blockmap.get_percent()
         else:
             return None
+
+    def get_stats(self) -> str:
+        """Get a string representation of transfer stats for this task"""
+        return str(self._stats)
 
     def print_stats(self) -> None:
         """If progress enabled, print stats to it"""
@@ -1630,8 +1707,6 @@ class Receiver:
             self._progress_fn(str(self._stats))
         if msg is not None: deps.message("finished_ok:%s" % msg)
         self._state = self._STATE_FINISHED_OK
-        #IDEA: do this in the app
-        deps.message("final rx stats:%s" % str(self._stats))
 
 #===== FILE TRANSFER AGENT =====================================================
 
@@ -1661,7 +1736,7 @@ class FileSender(Sender):
         self._filesize = sz
         self._filesha256  = sha256
         self._meta_msg = self.make_meta_msg()
-        deps.message("tx:%s\nsize:%d\nsha256:%s\n" % (filename, sz, hashstr(sha256)))
+        ##deps.message("tx:%s\nsize:%d\nsha256:%s\n" % (filename, sz, hashstr(sha256)))
 
         self._tickno     = 0
 
@@ -1720,7 +1795,11 @@ class FileReceiver(Receiver):
     """Receive something we know to be a disk file"""
     #NOTE: If you want to receive sensor data, use a Receiver() directly
 
-    def __init__(self, link_manager:LinkManager, filename:str or None, progress_fn:callable or None=None):
+    def __init__(self, link_manager:LinkManager, filename:str or None, progress_fn:callable or None=None,
+                 cached:bool=False):
+        #NOTE: cached for Raspberry Pi Pico local filesystem
+        #NOTE: uncached for sdcard or host file system
+
         # No metadata received yet
         self._local_filename = filename # might be None
         self._nblocks        = None
@@ -1732,7 +1811,16 @@ class FileReceiver(Receiver):
         self._linkreceiver   = link_manager.get_receiver()
         self._cch            = LinkMessage.CCH | LinkMessage.LINKCH
         self._dch            = LinkMessage.DCH | LinkMessage.LINKCH
-        self._writer         = FileWriter()
+        if cached:
+            # Raspberry Pi Pico filesystem writes insert a 32ms interrupts-off condition
+            # which trashes the receive pipeline, so use one of the cached modes
+            deps.message("using: CachedFileWriter")
+            self._writer = CachedFileWriter()  # PREALLOC or ON_DEMAND
+        else:
+            # host or sdcard writes can be written as we go along
+            deps.message("using: ImmediateFileWriter")
+            self._writer = ImmediateFileWriter()
+
         self._linkreceiver.register(self._cch, self.received_ctrl)  # for META_MSG, END_MSG
         Receiver.__init__(self, LinkReceiverFor(self._linkreceiver, self._dch), self._writer.write, progress_fn)
 
@@ -1753,7 +1841,7 @@ class FileReceiver(Receiver):
         ##assert isinstance(data, Buffer), "expected Buffer, got:%s" % str(type(data))
         ##deps.message("FileReceiver:_meta_msg %s" % hexstr(data))
         if len(data) < 5+32:  # block header + meta record
-            deps.message("warning:short START message, ignoring: %s" % hexstr(data))
+            deps.message("warning: short START message, ignoring: %s" % hexstr(data))
             return False  # SHORT START
 
         #check what byte 0 is? It's the type byte, previously selected?
@@ -1761,7 +1849,7 @@ class FileReceiver(Receiver):
         blocksz      = data[3]
         lastblock    = data[4]
         sha256       = bytes(data.get_slice(5, 32))
-        filename_raw = data.get_slice(5+32, len(data)-(32+5))
+        filename_raw = data.get_slice(5+32, len(data)-(32+5)-1) # skip the ZTERM
         filename     = deps.decode_to_str(filename_raw)
         filename     = deps.os_path_basename(filename)  # no directories allowed
 
@@ -1778,8 +1866,8 @@ class FileReceiver(Receiver):
             # now able to monitor the progress of block transfer
             self.set_block_info(blocksz, nblocks, lastblock)
             ##filesize = (nblocks * blocksz) + lastblock
-            self._writer.start(blocksz, nblocks, lastblock)  #NOTE: this 3-tuple might make a nice class
-            deps.message("rx:start: nb:%d bsz:%d lb:%d sha256:%s nm:%s" % (nblocks, blocksz, lastblock, hashstr(sha256), filename))
+            self._writer.start(self._local_filename, blocksz, nblocks, lastblock)  #NOTE: this 3-tuple might make a nice class
+            ##deps.message("rx:start: nb:%d bsz:%d lb:%d sha256:%s nm:%s" % (nblocks, blocksz, lastblock, hashstr(sha256), filename))
 
         else:
             # duplicate metadata, check it all matches
@@ -1788,7 +1876,7 @@ class FileReceiver(Receiver):
                 lastblock != self._lastblock or \
                 sha256 != self._sha256 or \
                 filename != self._remote_filename:
-                deps.message("warning:duplicate metadata received, but DIFFERENT!")
+                deps.message("warning: duplicate metadata received, but DIFFERENT!")
                 return False  # NOT HANDLED  IDEA: might stop transfer?
 
         return True  # HANDLED
@@ -1827,7 +1915,7 @@ class FileReceiver(Receiver):
                 ##self._writer = None  # don't do this, it will make re-runs fail
                 return  # FAILED
         else:
-            deps.message("warning:no blocks metadata received, can't check sha/size integrity in end_transfer")
+            deps.message("warning: no blocks metadata received, can't check sha/size integrity in end_transfer")
 
         # else PASSED or DONT KNOW
         self._nblocks = None
@@ -1835,8 +1923,7 @@ class FileReceiver(Receiver):
         self._lastblock = None
         self._sha256 = None
 
-        self._writer.commit(self._local_filename)
-        ##self._writer = None  # don't do this, it will make re-runs fail
+        self._writer.commit()
 
         # rename last, in case of file system error
         self.finished_ok("files identical:%s" % self._local_filename)
@@ -1924,4 +2011,6 @@ class StdStreamRadio(Link):
         # direct dispatch (fast)
         self.send     = self._packetiser.send
         self.recvinto = self._packetiser.recvinto
+
+
 # END: dttk.py

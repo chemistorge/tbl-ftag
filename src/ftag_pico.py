@@ -21,8 +21,9 @@ class PicoDeps:
     time_ms          = utime.ticks_ms  # ms, int
     time_sleep_ms    = utime.sleep_ms  # ms, int
     os_path_basename = lambda p: p     #NOTE: TEMPORARY fix
-    filesize         = lambda filename: os.stat(filename)[6]
     os_rename        = os.rename
+    os_unlink        = os.unlink
+    filesize         = lambda filename: os.stat(filename)[6]
     hashlib_sha256   = uhashlib.sha256
     message          = print
 
@@ -40,12 +41,12 @@ dttk.set_deps(PicoDeps)
 
 class UStats:
     def __init__(self):
-        self.data = 0
-        self.nodata = 0
+        ##self.data = 0
+        ##self.nodata = 0
         self.rxfull = 0
         self.minbytes = None
         self.maxbytes = None
-        self.rdsizes  = []
+        ##self.rdsizes  = []
 
     def update(self, nb:int) -> None:
         ##uart_stats.data += 1
@@ -64,9 +65,8 @@ class UStats:
         ##DISABLED uart_stats.rdsizes.append(nb)
 
     def __str__(self) -> str:
-        return "dat:%d nodat:%d rxfull:%d minbytes:%s maxbytes:%s\nrdsizes:%s S:%d N:%d" % (
-            self.data, self.nodata, self.rxfull, str(self.minbytes),
-            str(self.maxbytes), str(self.rdsizes), sum(self.rdsizes), len(self.rdsizes))
+        return "rxfull:%d minbytes:%s maxbytes:%s" % (
+            self.rxfull, str(self.minbytes), str(self.maxbytes))
 
 uart_stats = UStats()
 
@@ -100,8 +100,8 @@ class UartLink(dttk.Link):
 
     def send(self, data:dttk.Buffer or None) -> None:
         """Send data, blocking"""
-        #TODO: if we pass None, this will fail. We clearly never pass None.
-        #TODO: might want to remove None case and pass an empty buffer?
+        #NOTE: if we pass None, this will fail. We clearly never pass None.
+        #NOTE: might want to remove None case and pass an empty buffer?
         #it's all about EOF signalling in higher layers
         data.read_with(self._uart.write)
         if self.INTER_PACKET_DELAY_MS is not None:
@@ -131,7 +131,7 @@ class UartLink(dttk.Link):
                 ##print("recvinto:%s" % dttk.hexstr(buf.get_slice(0, nb)))  ##TESTING
                 return nb
 
-#TODO: we can probably add a factory method to Packetiser that creates
+#IDEA: we can probably add a factory method to Packetiser that creates
 #a wrapped class with a packetiser on outside
 class UartRadio(dttk.Link):
     """A packetised version of a UartLink"""
@@ -172,38 +172,36 @@ def rx_progress(msg:str or None=None, value:int or None=None) -> None:
     rxp(msg)
 ##rx_progress = None
 
-#----- SENDERS -----------------------------------------------------------------
-def send_file_task(filename:str) -> None: # or exception
+#----- TRANSFER TASKS ----------------------------------------------------------
+def send_file_task(filename:str) -> dttk.Sender: # or exception
     """Non-blocking sender for a single file (as a task that has a tick())"""
     return dttk.FileSender(filename, link_manager, progress_fn=tx_progress, blocksz=BLOCK_SIZE)
 
-def send_file(filename:str) -> None:  # or exception
-    """Blocking sender for a single file"""
-    send_file_task(filename).run()
-
-#----- RECEIVERS ---------------------------------------------------------------
-def receive_file_task(filename:str) -> None: # or exception
+def receive_file_task(filename:str) -> dttk.Receiver: # or exception
     """Non-blocking receiver"""
-    return dttk.FileReceiver(link_manager, filename, progress_fn=rx_progress)
+    #NOTE: cached=True is required for Pico local fs due to interrupts disabled on write
+    #NOTE2: if you are using an sdcard, you can set cached=False, for immediate writes
+    return dttk.FileReceiver(link_manager, filename, progress_fn=rx_progress, cached=True)
 
-#NOTE: this needs fixing after link_receiver refactoring
-def receive_file_noisy_task(filename:str) -> None: # or exception
-    """Non-blocking receiver with injected noise"""
-    raise ValueError("BROKEN SINCE LAST REFACTOR")
-    # NOISE_SPEC = {"prob": 1, "byte": (1,10)}
-    # noise_gen = dttk.NoiseGenerator(NOISE_SPEC).send
-    # def noisy_receive(info:dict or None=None) -> bytes or None:
-    #     return noise_gen(radio.recvinto(buf, info))
-    # receiver = dttk.FileReceiver(noisy_receive, filename, progress_fn=rx_progress)
-    # return receiver  # has-a tick() and run()
+#NOTE: TO FIX
+# def receive_file_noisy_task(filename:str) -> None: # or exception
+#    """Non-blocking receiver with injected noise"""
+#    raise ValueError("BROKEN SINCE LAST REFACTOR")
+#    # NOISE_SPEC = {"prob": 1, "byte": (1,10)}
+#    # noise_gen = dttk.NoiseGenerator(NOISE_SPEC).send
+#    # def noisy_receive(info:dict or None=None) -> bytes or None:
+#    #     return noise_gen(radio.recvinto(buf, info))
+#    # receiver = dttk.FileReceiver(noisy_receive, filename, progress_fn=rx_progress)
+#    # return receiver  # has-a tick() and run()
 
-def receive_file(filename:str) -> None:  # or exception
-    """Blocking receiver for a single file"""
-    receive_file_task(filename).run()
+def print_stats(name:str, task) -> None:
+    """Host-specific print_stats for sender or receiver"""
+    PicoDeps.message("stats for:%s" % name)
+    PicoDeps.message("  uart:     %s" % str(uart_stats))
+    PicoDeps.message("  link:     %s" % str(dttk.link_stats))
+    PicoDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
+    PicoDeps.message("  transfer: %s" % task.get_stats())
 
-def receive_file_noisy(filename:str) -> None: # or exception
-   """Blocking receiver for a single file, with injected noise"""
-   receive_file_noisy_task(filename).run()
 
 #END: ftag_pico.py
 

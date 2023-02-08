@@ -643,13 +643,13 @@ class DummyRadio:
         ##print("DummyRadio:recv %s %s" % (nb, dttk.hexstr(packet)))
         return nb
 
-#TODO: use a Packetiser factory method to do this class wrapping
+#IDEA: use a Packetiser factory method to do this class wrapping
 #then we can pass DummyRadio(rxlens) to it.
 class PacketisedDummyRadio(dttk.Link):
     def __init__(self):
         dttk.Link.__init__(self)
         dr = DummyRadio()
-        self._send_packetiser = dttk.Packetiser(dr)  #TODO: need a way to pass the rxlens
+        self._send_packetiser = dttk.Packetiser(dr)  #NOTE: need a way to pass the rxlens
         self._recv_packetiser = dttk.Packetiser(dr)
         # direct dispatch, faster
         self.send = self._send_packetiser.send
@@ -692,7 +692,7 @@ class TestPacketiserBoth(unittest.TestCase):
         ##TX_FILENAME = "dttk.py"
         ##TX_FILENAME = "stars.txt"
         RX_FILENAME = "received.txt"
-        rad = PacketisedDummyRadio()  #TODO: pass nb receive pattern here
+        rad = PacketisedDummyRadio()  #NOTE: pass nb receive pattern here
         link_manager = dttk.LinkManager(rad)
         BLOCK_SIZE = 50
 
@@ -705,7 +705,7 @@ class TestPacketiserBoth(unittest.TestCase):
             return dttk.FileReceiver(link_manager, filename, progress_fn=None)
 
         # send the whole file via packetiser/link into the tx_queue first
-        # as it means the receiver never blocks (TODO might be a bad idea?)
+        # as it means the receiver never blocks (NOTE might be a bad idea?)
         send_file_task(TX_FILENAME).run()
 
         # now receive from the tx queue

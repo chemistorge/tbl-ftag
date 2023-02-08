@@ -50,7 +50,7 @@ def do_measure(*args) -> callable:
         def wrapper_perf(*fnargs, **fnkwargs):
             ##fn_name = fn.__name__
             fn_name = str(fn)
-            #TODO: need to make this run quicker
+            #NOTE: need to make this run quicker
             if args[0] is not None and not callable(args[0]):
                 name = "%s.%s" % (args[0], fn_name)
             else:
