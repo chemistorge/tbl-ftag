@@ -14,7 +14,7 @@ except ImportError:
     # we are on Host
     from ftag_host import *
 
-TX_FILENAME = dttk.deps.TESTDATA + "/test35k.jpg"
+TX_FILENAME = "test35k.jpg"
 RX_FILENAME = "received.jpg"
 
 def show_dir(dir_name:str, dir_path:str) -> None:
@@ -23,8 +23,6 @@ def show_dir(dir_name:str, dir_path:str) -> None:
         print("  ", name)
 
 def files() -> None:
-    if dttk.deps.TESTDATA != '.':
-        show_dir("testdata", dttk.deps.TESTDATA)
     show_dir("cwd", ".")
 
 def help() -> None:
@@ -43,12 +41,12 @@ def send(filename:str=TX_FILENAME, pps:int=11) -> None:
     if pps is not None:
         print("  throttled at %d PPS" % pps)
         while True:
-            start_ms = dttk.deps.time_ms()
+            start_ms = dttk._deps.time_ms()
             if not sender.tick(): break  # finished
             if pps is not None:
-               time_per_packet_ms = dttk.deps.time_ms() - start_ms
+               time_per_packet_ms = dttk._deps.time_ms() - start_ms
                delay_time_ms = int((1000 - (time_per_packet_ms * pps)) / pps)
-               dttk.deps.time_sleep_ms(delay_time_ms)
+               dttk._deps.time_sleep_ms(delay_time_ms)
     else:
         sender.run()
 

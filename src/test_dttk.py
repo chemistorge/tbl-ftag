@@ -7,9 +7,6 @@ import unittest
 import ftag  # does an auto-dependency check for host
 import dttk
 
-#NOTE: this is also in HostDeps if we need it
-TESTDATA = "./"
-
 
 #----- BYTESTREAM GENERATOR ----------------------------------------------------
 class ByteStreamGenerator(dttk.Link):
@@ -688,7 +685,7 @@ class TestPacketiserBoth(unittest.TestCase):
 
     def test_send_file(self):
         """Send a whole file"""
-        TX_FILENAME = TESTDATA + "/testdata.txt"
+        TX_FILENAME = "testdata.txt"
         ##TX_FILENAME = "dttk.py"
         ##TX_FILENAME = "stars.txt"
         RX_FILENAME = "received.txt"

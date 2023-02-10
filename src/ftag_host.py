@@ -7,8 +7,7 @@ import os
 import hashlib
 import dttk
 
-class HostDeps:
-    TESTDATA         = "."
+class CPythonDeps:
     time_time        = time.time  # seconds&ms, float
     time_perf_time   = time.time  # seconds&ms, float
     time_ms          = lambda: int(time.time()*1000)  # milliseconds
@@ -21,7 +20,7 @@ class HostDeps:
     message          = lambda msg: sys.stderr.write(msg + '\n')
     decode_to_str    = lambda b: b.decode(errors='ignore')
 
-dttk.set_deps(HostDeps)
+dttk.set_deps(CPythonDeps)
 
 default_link_manager = dttk.LinkManager(dttk.InMemoryRadio())
 
@@ -76,10 +75,10 @@ def receive_file_task(filename:str, link=None) -> dttk.Receiver: # or exception
 
 def print_stats(name:str, task) -> None:
     """Host-specific print_stats for sender or receiver"""
-    HostDeps.message("stats for:%s" % name)
-    HostDeps.message("  link:     %s" % str(dttk.link_stats))
-    HostDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    HostDeps.message("  transfer: %s" % task.get_stats())
+    CPythonDeps.message("stats for:%s" % name)
+    CPythonDeps.message("  link:     %s" % str(dttk.link_stats))
+    CPythonDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
+    CPythonDeps.message("  transfer: %s" % task.get_stats())
 
 #END: ftag_host.py
 

@@ -9,23 +9,52 @@ import uhashlib
 import dttk
 from machine import UART
 import perf
+import micropython
 
 UART_PORT = 0
 UART_BAUD_RATE  = 115200
 BLOCK_SIZE = 50
 
-class PicoDeps:
-    TESTDATA         = "."
+@micropython.viper
+def crc16_mp_v(data:ptr8, length:int) -> int:
+    ##CRC16_POLY = const(0x1021)  # CCITT-16
+    crcsum = 0xFFFF
+
+    idx = 0
+    while length != 0:
+        # add_byte
+        v = 0x80
+        this_byte = data[idx]
+        idx += 1
+        while v != 0:
+            bit = crcsum & 0x8000
+            crcsum <<= 1
+            if this_byte & v:  crcsum += 1
+            if bit:            crcsum ^= 0x1021  #CRC16_POLY
+            v >>= 1
+        length -= 1
+
+    # finish
+    for i in range(16):
+        bit = crcsum & 0x8000
+        crcsum <<= 1
+        if bit: crcsum ^= 0x1021  #CRC16_POLY
+    return crcsum & 0xFFFF  #  keep within a U16
+
+class MicroPythonDeps:
     time_time        = utime.time      # seconds, int
     time_perf_time   = utime.ticks_us  # us, int
     time_ms          = utime.ticks_ms  # ms, int
     time_sleep_ms    = utime.sleep_ms  # ms, int
     os_path_basename = lambda p: p     #NOTE: TEMPORARY fix
     os_rename        = os.rename
-    os_unlink        = os.unlink
+    os_unlink        = os.remove
     filesize         = lambda filename: os.stat(filename)[6]
     hashlib_sha256   = uhashlib.sha256
     message          = print
+    #TODO: Buffer will change to be a memoryview()
+    #NOTE: get_slice does indeed return a copy at this stage
+    crc16            = lambda data, length: crc16_mp_v(data.get_slice(0, len(data)), length)  # viper enhanced fast algorithm
 
     @staticmethod
     def decode_to_str(b:bytes) -> str:
@@ -37,7 +66,7 @@ class PicoDeps:
             print("unicode decode error")
             return "<UnicodeError>"  # this is the best we can do
 
-dttk.set_deps(PicoDeps)
+dttk.set_deps(MicroPythonDeps)
 
 class UStats:
     def __init__(self):
@@ -108,7 +137,6 @@ class UartLink(dttk.Link):
             ##print("delay %d ms" % self.INTER_PACKET_DELAY_MS)
             utime.sleep_ms(self.INTER_PACKET_DELAY_MS)
 
-    @perf.tbc
     def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
         _ = info  # argused
         assert len(buf) == 0, "Uart expects an empty/reset buffer, len was:%d" % len(buf)
@@ -196,11 +224,11 @@ def receive_file_task(filename:str) -> dttk.Receiver: # or exception
 
 def print_stats(name:str, task) -> None:
     """Host-specific print_stats for sender or receiver"""
-    PicoDeps.message("stats for:%s" % name)
-    PicoDeps.message("  uart:     %s" % str(uart_stats))
-    PicoDeps.message("  link:     %s" % str(dttk.link_stats))
-    PicoDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    PicoDeps.message("  transfer: %s" % task.get_stats())
+    MicroPythonDeps.message("stats for:%s" % name)
+    MicroPythonDeps.message("  uart:     %s" % str(uart_stats))
+    MicroPythonDeps.message("  link:     %s" % str(dttk.link_stats))
+    MicroPythonDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
+    MicroPythonDeps.message("  transfer: %s" % task.get_stats())
 
 
 #END: ftag_pico.py

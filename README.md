@@ -153,6 +153,9 @@ the UART is imported from, that might make the demos fail to run at present.
 
 ## Future Work
 
+* A lot of work is currently going on with optimisation. You can read our
+ongoing story about that [here](performance.md)
+
 * We might move over to uasyncio, once the comparative performance between
 the tasking.py cooperative scheduling and uascync has been characterised.
 
