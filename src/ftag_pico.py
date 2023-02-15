@@ -7,13 +7,15 @@ import utime
 import os
 import uhashlib
 import dttk
-from machine import UART
+from machine import UART, Pin
 import perf
 import micropython
 
-UART_PORT = 0
 UART_BAUD_RATE  = 115200
-BLOCK_SIZE = 50
+UART_PORT       = 1
+UART_TX_GP      = 20  # LED1 on picosat
+UART_RX_GP      = 21  # LED2 on picosat
+BLOCK_SIZE      = 50
 
 @micropython.viper
 def crc16_mp_v(data:ptr8, length:int) -> int:
@@ -41,6 +43,7 @@ def crc16_mp_v(data:ptr8, length:int) -> int:
         if bit: crcsum ^= 0x1021  #CRC16_POLY
     return crcsum & 0xFFFF  #  keep within a U16
 
+#TODO: do this with import platdeps
 class MicroPythonDeps:
     time_time        = utime.time      # seconds, int
     time_perf_time   = utime.ticks_us  # us, int
@@ -52,9 +55,7 @@ class MicroPythonDeps:
     filesize         = lambda filename: os.stat(filename)[6]
     hashlib_sha256   = uhashlib.sha256
     message          = print
-    #TODO: Buffer will change to be a memoryview()
-    #NOTE: get_slice does indeed return a copy at this stage
-    crc16            = lambda data, length: crc16_mp_v(data.get_slice(0, len(data)), length)  # viper enhanced fast algorithm
+    crc16            = lambda data, length: crc16_mp_v(data[:], length)  # viper enhanced fast algorithm
 
     @staticmethod
     def decode_to_str(b:bytes) -> str:
@@ -106,7 +107,7 @@ class UartLink(dttk.Link):
     # anything below 60us was shown to sometimes cause rxbuf overflows
     # with the buffer sizes in use here
     INTER_PACKET_DELAY_MS = None # fails at 1000us, works around 50ms+
-    def __init__(self, port:int, baud_rate:int):
+    def __init__(self, port:int, baud_rate:int, tx:int, rx:int):
         dttk.Link.__init__(self)
         self._waiting = None
         # for receive resilience, we want a big receive buffer
@@ -125,7 +126,7 @@ class UartLink(dttk.Link):
             ##self._rxbuf_size = 128
 
         self._uart = UART(port, baud_rate, txbuf=self._txbuf_size, rxbuf=self._rxbuf_size,
-                          timeout=-1, timeout_char=-1) # tx=GP0 pin1 rx=GP1 pin2
+                          timeout=-1, timeout_char=-1, tx=Pin(tx, Pin.OUT), rx=Pin(rx, Pin.OUT))
 
     def send(self, data:dttk.Buffer or None) -> None:
         """Send data, blocking"""
@@ -156,7 +157,6 @@ class UartLink(dttk.Link):
                 if nb == buf.get_max():
                     ##print("<<RXFULL")
                     uart_stats.rxfull += 1
-                ##print("recvinto:%s" % dttk.hexstr(buf.get_slice(0, nb)))  ##TESTING
                 return nb
 
 #IDEA: we can probably add a factory method to Packetiser that creates
@@ -168,15 +168,15 @@ class UartRadio(dttk.Link):
     #and all our protocols use a single length byte
     MTU = 1 + (255*2)  #if set to None, no MTU is enforced
 
-    def __init__(self, port:int, baud_rate:int):
+    def __init__(self, port:int, baud_rate:int, tx:int, rx:int):
         dttk.Link.__init__(self)
-        self._packetiser = dttk.Packetiser(UartLink(port, baud_rate))
+        self._packetiser = dttk.Packetiser(UartLink(port, baud_rate, tx, rx))
         # direct dispatch, faster
         self.send = self._packetiser.send
         self.recvinto = self._packetiser.recvinto
 
 
-radio = UartRadio(UART_PORT, UART_BAUD_RATE)
+radio = UartRadio(UART_PORT, UART_BAUD_RATE, UART_TX_GP, UART_RX_GP)
 
 link_manager = dttk.LinkManager(radio)
 

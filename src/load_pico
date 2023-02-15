@@ -25,5 +25,6 @@ cp test35k.jpg /pyboard
 cp testdata.txt /pyboard
 rm /pyboard/received.jpg
 rm /pyboard/received.txt
+rm /pyboard/main.py
 HERE
 echo done: ${PORT}

@@ -7,6 +7,7 @@ import os
 import hashlib
 import dttk
 
+#TODO: do this with import platdeps
 class CPythonDeps:
     time_time        = time.time  # seconds&ms, float
     time_perf_time   = time.time  # seconds&ms, float

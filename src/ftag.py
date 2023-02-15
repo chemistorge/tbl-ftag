@@ -34,8 +34,8 @@ def help() -> None:
     print("  ftag.receive()  - receive a test file via UART0")
 
 #Throttled send, by default.
-# experiments show that about 11pps doesn't stress the receiver too much
-def send(filename:str=TX_FILENAME, pps:int=11) -> None:
+DEFAULT_PPS = 40  # experimental evidence shows this keeps a 512+32 receive ok
+def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS) -> None:
     print("sending:%s" % filename)
     sender = send_file_task(filename)
     if pps is not None:
@@ -68,6 +68,18 @@ def loopback(tx_filename:str=TX_FILENAME, rx_filename:str=RX_FILENAME) -> None:
     receiver = receive_file_task(rx_filename)
 
     tasking.run_all([sender, receiver])
+
+    #TEST CODE
+    # # show task progress, so we can spot lockups
+    # s = True
+    # r = True
+    # while s or r:
+    #     if s:
+    #         print("send")
+    #         s = sender.tick()
+    #     if r:
+    #         print("recv")
+    #         r = receiver.tick()
 
     print_stats("tx", sender)
     print_stats("rx", receiver)

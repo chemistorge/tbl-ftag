@@ -4,6 +4,8 @@ This is a live document that captures our current view on optimising the
 performance of this communications code. As such, it will be updated with
 facts and figures and analysis as the project progresses.
 
+The latest change added since last version, is the section on ```memoryview()```.
+
 
 ## The Importance of Performance
 
@@ -22,7 +24,8 @@ There are many ways of optimising code for better performance, and this page
 aims to collect together all of the various techniques and insights captured
 throughout this process.
 
-## The Starting Point
+
+# 08/02/2023 The Starting Point
 
 The codebase was first completely developed in standard host Python
 (CPython) 3. Specifically this version of Python 3.6 on my (old) Mac laptop:
@@ -138,15 +141,147 @@ Clearly there are many parts to a send and receive pipeline, and these figures a
 on data sent over a UART running at 115200bps. So additional end to end wait times
 will affect some of the figures.
 
-## Future Work
+
+# 15/02/2023: memoryview() and rewritting the Buffer abstraction
+
+## The Problem
+
+The ```Buffer()``` abstraction in ```dttk.py``` was written to recognise two 
+vital facts:
+ 
+1. when sending messages with a protocol, the user data from the application
+has to have some header bytes inserted at the start and a CRC at the end.
+
+2. when receiving messages with a protocol, the incoming message has headers
+and the CRC footer stripped, to generate the user payload sent up to the
+application.
+
+The real problem with this is that every time you want to add a header as
+you go down the stack for a send, you have to copy the whole buffer to a new
+buffer, leaving space for the new headers. On the way up the stack for a
+receive, you have to copy part of the data into a new buffer to remove
+headers. All this copying between buffers takes time, and is on the critical
+path of data transfer, significantly increasing system loading and slowing
+everything down.  The problem compounds further if there are multiple
+layers of a network stack (and the OSI 7-layer model suggests a reference
+stack with 7 such layers). 
+
+## Typical Solutions
+
+There is a well known approach to this in the industry called 'zero copy buffers',
+whereby data is filled into buffers that are either chains of little parts
+with headers and data and footers, or the buffer is intentionally filled in
+and accessed by moving the start and end offsets as it moves up and down
+the stack. This removes the overhead associated with cop
+
+Adam Dunkels Lightweight IP (LwIP) uses a protobuf scheme, whereby pbufs
+can be chained together and processed internally by the stack quite
+efficiently. But the problem with this is that the stack then has to also
+deal with garbage collection of buffers, and you can't just index those
+buffers in the normal way, you have to access them via the pbuf abstraction.
+
+Because the stack we are developing here runs on MicroPython, we already
+know that there will be some natural garbage collection in normal operation,
+and MicroPython manages that for us. So we chose to go with an offset-based
+scheme, whereby a bigger buffer is allocated and an initial start offset
+of 10 bytes used, to allow for header expansion as the data flows down
+the stack. We wrote a ```Buffer()``` abstraction to manage this offsetting,
+and went through about 3 versions to get to the stats collected earlier.
+But the performance was still shoddy.
+
+## The Python Buffer Protocol
+
+After a lot of reading Python docs and little experiments at the REPL prompt,
+it because clear that the best thing to do is to try to get Python to always
+use a thing called the 'Buffer Protocol'. This is a C-side API that you
+can't access directly in Python, but if you make the right choices in your
+design, you can force Python to make good use of it.
+
+The Buffer Protocol allows fast direct memory access to blocks of bytes
+in the memory blocks of your data structures, all while keeping the code
+running inside the C-domain. To do this, you work with ```bytes()``` and
+```bytearray()``` objects, slices with ```[ ]``` operators, and two useful
+objects called ```memoryview()``` and ```slice()```.
+
+So, this is a very slow way to copy data:
+
+```python
+b = bytes(b'12345678')
+ba = bytearray(20)
+for i in range(len(b)):
+    ba[i] = b[i]
+```
+
+The reason this is so slow, is because the loop happens as a set of python
+bytecodes; thus it is interpreted, and on average 10-20 times slower than
+doing this in C.
+
+In this case, the fastest way to initiate the Buffer Protocol is this:
+
+```python
+b = bytes(b'12345678')
+ba = bytearray(b)
+```
+
+The ```bytearray``` constructor will take a bytes-like object, and because
+both ```bytes``` and ```bytearray``` support the Buffer Protocol, the
+memory copy between b and ba happens entirely in the C-domain.
+
+While this doesn't make much difference on a 4GHz machine, or with 8 bytes of
+data, it does make a significant difference on a 125MHz Raspberry Pi Pico,
+and also a significant difference if you have very large buffers.
+
+## Slices of data
+
+Yes Yes, but the real problem here to solve, was to provide fast read, write,
+and copy access to limited ranges of a bytearray (inside my ```Buffer()``` object).
+How can we manage the offsets and still get fast access to the internal
+memory of the ```bytearray```? And how, specifically, can we write to just a
+middle portion of a ```bytearray``` without Python first taking an independent
+copy of that slice, as happens with ```data = ba[3:15]```?
+
+YOU'LL HAVE TO WAIT UNTIL THE NEXT INSTALLMENT!!
+
+## New performance measures
+
+As a teaser, here are the new performance measures with the improved code
+
+```
+Unthrottled tx stats:
+  tx transfer: T:6 blk:695 by:34710 PPS:115 BPS:5785   <<< WOW,
+```
+
+The receiver falls over with errors at that rate - but STONKING!
+
+```
+Throtted at 40 packets per second
+  tx transfer: T:72 blk:2780 by:138840 PPS:38 BPS:1928
+```
+
+That's more like it!
+
+```
+Adding in resilient re-sending of data:
+    START_META   = 8   # first 8 blocks are metadata message
+    META_EVERY_N = 50  # send a new metadata message every N blocks
+    NUM_REPEATS  = 3   # number of times to re-send the same block (0 means just send once)
+    
+  rx transfer: T:75 blk:695 by:34710 PPS:9 BPS:462    
+```
+
+So, a transfer of a 35K jpeg (our target image size) over a UART, sending
+8 meta messages at the start, a meta message every 50 blocks, and repeating
+each block 3 times for resilience in case of damaged payloads (4 total times
+per block) transfers in a little over 1 minute. Compared to our early
+experiments of 1 block per second with no repeats, that's 10 times
+increase in transfer speed, with a 4 times increase in resilience.
+
+
+
+# Future Work
 
 There is much optimisation to do to this code.  Here are some of the items
 on our todo list:
-
-* Introduction of ```memoryview()``` to remove any remaining buffer slicing 
-operations will make a big difference, as it takes good advantage of the Buffer 
-Protocol  such that all of the key work is done in the C domain loops, rather 
-than being done in MicroPython domain loops.
 
 * Inverting the receive pipeline from a polled architecture to a callback 
 architecture. This will improve responsiveness to incoming packets, but

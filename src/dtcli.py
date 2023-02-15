@@ -242,8 +242,8 @@ def main(argv) -> None:
 
     except BrokenPipeError:
         sys.stderr.write("%s: broken pipe\n" % tool_name[2:])
-    except KeyboardInterrupt:
-        sys.stderr.write("\n%s: CTRL-C\n" % tool_name[2:])
+    ##except KeyboardInterrupt:
+    ##    sys.stderr.write("\n%s: CTRL-C\n" % tool_name[2:])
 
 if __name__ == "__main__":
     main(sys.argv[1:])

@@ -389,127 +389,127 @@ low  = lambda b: b & 0xFF
 #===== EFFICIENT MEMORY BUFFERS ================================================
 
 class Buffer:
-    """A high performance, low copy overhead buffer for packets"""
-    # use this, instead of mixing bytes and bytearray, to avoid copy overhead
-    #NOTE: this implements the key buffer protocol methods, so it can be
-    #used mostly where a bytes() or a bytearray() is used, interchangeably.
+    DEFAULT_START = 10  # allow LHS space for headers
+    DEFAULT_SIZE = 128
 
-    DEFAULT_START = 10  # space for prepending headers
-    DEFAULT_SIZE  = 128
+    def __init__(self, initial_value=None, size:int=DEFAULT_SIZE, start:int=DEFAULT_START):
+        self._mv = memoryview(bytearray(size))
+        self._start = self._end = self._initial_start = start
+        self._used = self._mv[start:start]
+        if initial_value is not None:
+            self.extend(initial_value)
 
-    def __init__(self, values=None, size:int=DEFAULT_SIZE, start=DEFAULT_START):
-        self._buf = bytearray(size)
-        self._initial_start = self._start = self._end = start
-        if values is not None:  self.create_from(values)
+    def __setitem__(self, idx, value):
+        self._used[idx] = value
 
-    def __iter__(self):
-        """Create an iterator for cycling through all active bytes"""
-        class BufferIter:
-            def __init__(self, parent):
-                self._parent = parent
-                self._next_idx = 0
+    def __getitem__(self, idx):
+        #NOTE: also services iter(), accepts slice(), or int index
+        return self._used[idx]
 
-            def __iter__(self):
-                return self
+    def __len__(self):
+        return len(self._used)
 
-            def __next__(self) -> int:
-                if self._next_idx >= len(self._parent): raise StopIteration
-                v = self._parent[self._next_idx]
-                self._next_idx += 1
-                return v
-
-        return BufferIter(self)
+    def __repr__(self) -> str:
+        return "Buffer(sz=%d, start=%d, end=%d v=%s)" % (len(self._mv), self._start, self._end, self._mv.hex())
 
     def __str__(self) -> str:
-        """Show stats about the buffer"""
-        return "Buffer(sz:%d, start:%d, end:%d)" % (
-            len(self._buf), self._start, self._end)
+        return "Buffer(sz=%d, start=%d, end=%d)" % (len(self._mv), self._start, self._end)
 
-    def __getitem__(self, idx:int): # -> bytes #NOTE int might be better?
-        return self._buf[self._start + idx]
-
-    def __len__(self) -> int:
-        """The current used length, between start and end"""
-        return self._end - self._start
+    def __iter__(self):
+        return iter(self._used)
 
     def get_max(self) -> int:
-        """The maximum size of buffer"""
-        return len(self._buf)
+        """How big could this buffer grow?"""
+        return len(self._mv)
 
     def is_full(self) -> bool:
-        """Is this buffer full, so an extend or prepend will grow()?"""
-        return (self._end - self._start) == len(self._buf)
-
-    def get_slice(self, start:int, length:int) -> bytearray:
-        """Read a slice of the buffer, e.g. to get a SHA256 or filename out"""
-        s = self._start+start
-        return self._buf[s:s+length]
-
-    def read_with(self, user_fn:callable) -> int or None:
-        """Access the internal buffer valid range, using a user provided function"""
-        # This prevents the need to expose the buffer to outside
-        # this will write with the uart in the pico tester
-        nb = user_fn(self._buf[self._start:self._end])
-        #NOTE: this takes a slice of the buffer if start and end are not full range
-        #and that can stress out the garbage collector
-        ##_deps.message("read_with user_fn wrote:%s" % str(nb))
-        return nb
-
-    def write_with(self, user_fn:callable) -> int or None:
-        """Use the user function to read into our buffer"""
-        # This prevents exposing our buffer to outsiders
-        # it always reads to the start of the buffer at zero, but that is fine
-        # because this will be for a receive path which will peel off headers
-        # and never need to lgrow()
-        self._start = self._end = 0
-        nb = user_fn(self._buf)
-        if nb is None: return None  # could not read (probably EOF?)
-        self._end = nb
-        return nb
-
-    def create_from(self, values) -> None:
-        """Create a buffer filled with these values"""
-        self.reset()
-        self.extend(values)
-
-    def prepend1(self, value) -> None:
-        self._start -= 1
-        self._buf[self._start] = value
-
-    def prepend(self, values) -> None:
-        """Prepend one or more values to the LHS, e.g. adding a header"""
-        self._start -= len(values)
-        offset = self._start
-        b = self._buf
-        for v in values:  # assumes iterable
-            b[offset] = v  # will fail if not big enough, or if value out of range
-            offset += 1
+        """Is every byte available actually used?"""
+        return len(self._mv) == len(self._used)
 
     def append(self, value:int) -> None:
-        """Same as extend"""
-        self._buf[self._end] = value
+        """Append a single value to RHS"""
+        new_used = self._mv[self._start: self._end+1]  # exception if full
+        length = self._end - self._start
+        new_used[length] = value  #NOTE: not sure why there is a warning here?
         self._end += 1
+        self._used = new_used
 
     def extend(self, values) -> None:
-        """Extend one or more values to the RHS, e.g. adding a footer"""
-        offset = self._end
-        b = self._buf
-        for v in values:  # assumes iterable
-            b[offset] = v  # will fail if not big enough, or if value out of range
-            offset += 1
-        self._end = offset
+        """Extend RHS by bytes-like or iterable of int"""
+        len_old_used = len(self._used)
+        len_values = len(values)
+        # extend the viewed range to accept the new data
+        new_used = self._mv[self._start:self._end+len_values]  # exception if full
+
+        # is it a bytes-like object (supports buffer protocol)
+        try:
+            ##new_used[-len_old_used:] = values
+            new_used[len_old_used:len_old_used+len_values] = values
+        except: #Cpython=TypeError, MicroPython=NotImplementedError
+            # no it isn't, so iterate it instead
+            for i in range(len_values):
+                new_used[len_old_used+i] = values[i]
+        # change last, in case of exception
+        self._end += len_values
+        self._used = new_used
+
+    def prepend1(self, value:int) -> None:
+        """Extend LHS by one value of int"""
+        new_used = self._mv[self._start-1:self._end]  # exception if out of range
+        new_used[0] = value  #NOTE: not sure why there is a warning here
+        self._start -= 1
+        self._used = new_used
+
+    def prepend(self, values) -> None:
+        """Extend LHS by any number of values, bytes-like or iterable of int"""
+        len_values = len(values)
+        # extend the viewed range to accept the new data
+        new_used = self._mv[self._start-len_values:self._end]  # exception if full
+
+        # is it a bytes-like object (supports buffer protocol)
+        try:
+            ##new_used[-len_old_used:] = values
+            new_used[:len_values] = values
+        except:  # TypeError on Cpython, NotImplementedError on MicroPython
+            # no it isn't, so iterate it instead
+            for i in range(len_values):
+                new_used[i] = values[i]
+        # change last, in case of exception
+        self._start -= len_values
+        self._used = new_used
 
     def ltrunc(self, amount:int) -> None:
-        """Remove bytes at LHS, e.g. to remove a header that has been processed"""
+        """Remove a number of items from LHS"""
+        new_used = self._mv[self._start+amount:self._end]  # exception if out of range
         self._start += amount
+        self._used = new_used
 
     def rtrunc(self, amount:int) -> None:
-        """Remove bytes at RHS, e.g. to remove a footer that has been processed"""
+        """Remove a number of items from RHS"""
+        new_used = self._mv[self._start:self._end-amount]  # exception if out of range
         self._end -= amount
+        self._used = new_used
+
+    def read_with(self, user_fn: callable) -> int or None:
+        ## user_fn = uart.write(bytes-like) -> int
+        return user_fn(self._used)  # from start to end
+
+    def write_with(self, user_fn: callable) -> int or None:
+        ## user_fn = uart.read(bytes-like) -> int
+        self.reset()  # clear buffer to start
+        nb = user_fn(self._mv[self._start:])  # whole available buffer
+        if nb is None: return None  # could not read (probably EOF?)
+        self._end = self._start + nb
+        self._used = self._mv[self._start:self._end]
+        return nb
 
     def reset(self) -> None:
-        """Reset and recycle the buffer as empty, keeps gc out of the loop"""
         self._start = self._end = self._initial_start
+        self._used = self._mv[self._start:self._end]
+
+    def create_from(self, values) -> None:
+        self.reset()
+        self.extend(values)
 
 
 #===== READERS AND WRITERS =====================================================
@@ -554,13 +554,12 @@ class FileReader:
         return data
 
 class CachedFileWriter:
+    """Cache data into RAM until it is verified, commit to disk after verification"""
     """Write a random access disk file, streamed, or at any position"""
-    #NOTE: guaranteed memory, but slow copy process
-    PREALLOC  = 0 # cache but pre-alloc all required bufs
-    #NOTE: unguaranteed memory, but fast copy process
-    ON_DEMAND = 1 # cache and create new RAM block on each write()
+    PREALLOC  = 0 # cached, but pre-alloc all required bytearray()s at start()
+    ON_DEMAND = 1 # cached, but create new bytes() on each call to write()
 
-    def __init__(self, mode=ON_DEMAND):
+    def __init__(self, mode):
         self._name = None
         self._file = None
         self._bufs  = None
@@ -600,42 +599,23 @@ class CachedFileWriter:
         if data is None:      return  # EOF
         if len(data) is None: return  #NODATA
 
+        if self._bufs is None:
+            # this might actually happen in real life, so don't assert
+            _deps.message("warning: ignoring data before META_START message, size not yet known")
+            return
+
         blockno  = int(offset / self._blocksz)  # index into buffer chain
         residual = offset % self._blocksz
         if residual != 0:
             raise ValueError("offset alignment error %d does not align to %d" % (offset, self._blocksz))
 
-        if self._mode == self.PREALLOC:
-            if self._bufs is None:
-                # this might actually happen in real life, so don't assert
-                _deps.message("warning: ignoring data before META_START message, size not yet known")
-                return
+        if self._mode == self.ON_DEMAND:
+            # fast-copy bytes from Buffer into on-demand bytes, using buffer-protocol
+            self._bufs[blockno] = bytes(data[:])
 
-            # pre-allocated buffer scheme (slow copy, but memory guaranteed)
-            src_buf   = data._buf
-            src_len   = len(data)
-            dst_buf = self._bufs[blockno]
-            dst_len = len(dst_buf)  # size of pre-allocated bytearray (lastblock might be smaller)
-
-            if src_len != dst_len:
-               raise ValueError("Block size mismatch: incoming:%d store:%d" % (src_len, dst_len))
-            s = data._start  # remember there might be a header offset
-
-            #NOTE: use new slice notation copy here dst_buf[:dst_len] = src_buf[data._start:data._end]
-            #NOTE: does rhs slice create a temporary copy though? But copy still will be quicker
-            for d in range(dst_len):
-               dst_buf[d] = src_buf[s]
-               s += 1
-
-        elif self._mode == self.ON_DEMAND:
-            if self._bufs is None:
-                # this might actually happen in real life, so don't assert
-                _deps.message("warning: ignoring data before META_START message, size not yet known")
-                return
-
-            # fast-copy on demand scheme (but might get MemoryError)
-            #NOTE: introduce the new class Buffer(bytearray) pattern instead
-            self._bufs[blockno] = data._buf[data._start:data._end]  # slice takes a copy
+        elif self._mode == self.PREALLOC:
+            # fast-copy bytes from Buffer into prealloc bytearray, using buffer-protocol
+            self._bufs[blockno][:] = data[:]
 
     def get_sha256(self) -> bytes:
         """Sha256 sum the buf, for integrity checking"""
@@ -674,7 +654,7 @@ class CachedFileWriter:
         self._invalidate()
 
 class ImmediateFileWriter:
-    """Write a random access disk file, streamed, or at any position"""
+    """Write data to disk file as it arrives, verify by re-reading and rename"""
     TEMP_NAME = "_INPROGRESS.tmp"  #NOTE: generate this name to be unique
 
     def __init__(self):
@@ -1717,9 +1697,9 @@ TYPENO_META = 0x01  # CCH typeno for msg_start
 
 class FileSender(Sender):
     """Send something we know to be a disk file"""
-    START_META   = 1     #8   # first 8 blocks are metadata message
-    META_EVERY_N = 2000  #20  # send a new metadata message every N blocks
-    NUM_REPEATS  = 0     #3   # number of times to re-send the same block (0 means just send once)
+    START_META   = 8   # first 8 blocks are metadata message
+    META_EVERY_N = 50  # send a new metadata message every N blocks
+    NUM_REPEATS  = 3   # number of times to re-send the same block (0 means just send once)
     # If you want to send sensor data, use a Sender() directly
 
     def __init__(self, filename:str, link_manager:LinkManager, progress_fn:callable or None=None,
@@ -1816,8 +1796,8 @@ class FileReceiver(Receiver):
         if cached:
             # Raspberry Pi Pico filesystem writes insert a 32ms interrupts-off condition
             # which trashes the receive pipeline, so use one of the cached modes
-            _deps.message("using: CachedFileWriter")
-            self._writer = CachedFileWriter()  # PREALLOC or ON_DEMAND
+            _deps.message("using: CachedFileWriter(PREALLOC)")
+            self._writer = CachedFileWriter(CachedFileWriter.PREALLOC)  # PREALLOC or ON_DEMAND
         else:
             # host or sdcard writes can be written as we go along
             _deps.message("using: ImmediateFileWriter")
@@ -1850,8 +1830,8 @@ class FileReceiver(Receiver):
         nblocks      = (data[1]<<8) | data[2]
         blocksz      = data[3]
         lastblock    = data[4]
-        sha256       = bytes(data.get_slice(5, 32))
-        filename_raw = data.get_slice(5+32, len(data)-(32+5)-1) # skip the ZTERM
+        sha256       = bytes(data[5:5+32])
+        filename_raw = bytes(data[5+32:-1])  # skip the ZTERM
         filename     = _deps.decode_to_str(filename_raw)
         filename     = _deps.os_path_basename(filename)  # no directories allowed
 

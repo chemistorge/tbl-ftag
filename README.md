@@ -176,8 +176,13 @@ configuration.
 partial files with their receive bitmaps, to allow recovery from power failure.
 
 
+## Contributions
+
+* The RFM69 radio code started off being based on code from this repo:
+[pico-energenie](https://github.com/thinking-binaries/pico-energenie)
+
 David Whale
 
 @whaleygeek
 
-8th Feb 2023
+Feb 2023
