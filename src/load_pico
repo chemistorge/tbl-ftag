@@ -16,11 +16,13 @@ fi
 
 echo "copying files to pico ${PORT}..."
 rshell -p ${PORT} --buffer-size 512 <<HERE
+cp platdeps.py /pyboard
 cp dttk.py /pyboard
 cp ftag.py /pyboard
 cp ftag_pico.py /pyboard
 cp perf.py /pyboard
 cp tasking.py /pyboard
+cp myboard.py /pyboard
 cp test35k.jpg /pyboard
 cp testdata.txt /pyboard
 rm /pyboard/received.jpg

@@ -1,27 +1,8 @@
 # ftag_host.py  22/01/2023  D.J.Whale - host based adaptor to file transfer agent
 #NOTE: for use on HOST python only
 
-import sys
-import time
-import os
-import hashlib
+import platdeps
 import dttk
-
-#TODO: do this with import platdeps
-class CPythonDeps:
-    time_time        = time.time  # seconds&ms, float
-    time_perf_time   = time.time  # seconds&ms, float
-    time_ms          = lambda: int(time.time()*1000)  # milliseconds
-    time_sleep_ms    = lambda ms: time.sleep(ms/1000.0)
-    os_path_basename = os.path.basename
-    os_rename        = os.rename
-    os_unlink        = os.unlink
-    filesize         = lambda filename: os.stat(filename).st_size
-    hashlib_sha256   = hashlib.sha256
-    message          = lambda msg: sys.stderr.write(msg + '\n')
-    decode_to_str    = lambda b: b.decode(errors='ignore')
-
-dttk.set_deps(CPythonDeps)
 
 default_link_manager = dttk.LinkManager(dttk.InMemoryRadio())
 
@@ -76,10 +57,10 @@ def receive_file_task(filename:str, link=None) -> dttk.Receiver: # or exception
 
 def print_stats(name:str, task) -> None:
     """Host-specific print_stats for sender or receiver"""
-    CPythonDeps.message("stats for:%s" % name)
-    CPythonDeps.message("  link:     %s" % str(dttk.link_stats))
-    CPythonDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    CPythonDeps.message("  transfer: %s" % task.get_stats())
+    platdeps.message("stats for:%s" % name)
+    platdeps.message("  link:     %s" % str(dttk.link_stats))
+    platdeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
+    platdeps.message("  transfer: %s" % task.get_stats())
 
 #END: ftag_host.py
 

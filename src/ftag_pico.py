@@ -3,71 +3,15 @@
 # it sets the deps for the dttk module
 # but in this module, it can use functions directly
 
-import utime
-import os
-import uhashlib
+import platdeps
+from platdeps import micropython
+import myboard
+
 import dttk
 from machine import UART, Pin
 import perf
-import micropython
 
-UART_BAUD_RATE  = 115200
-UART_PORT       = 1
-UART_TX_GP      = 20  # LED1 on picosat
-UART_RX_GP      = 21  # LED2 on picosat
-BLOCK_SIZE      = 50
-
-@micropython.viper
-def crc16_mp_v(data:ptr8, length:int) -> int:
-    ##CRC16_POLY = const(0x1021)  # CCITT-16
-    crcsum = 0xFFFF
-
-    idx = 0
-    while length != 0:
-        # add_byte
-        v = 0x80
-        this_byte = data[idx]
-        idx += 1
-        while v != 0:
-            bit = crcsum & 0x8000
-            crcsum <<= 1
-            if this_byte & v:  crcsum += 1
-            if bit:            crcsum ^= 0x1021  #CRC16_POLY
-            v >>= 1
-        length -= 1
-
-    # finish
-    for i in range(16):
-        bit = crcsum & 0x8000
-        crcsum <<= 1
-        if bit: crcsum ^= 0x1021  #CRC16_POLY
-    return crcsum & 0xFFFF  #  keep within a U16
-
-#TODO: do this with import platdeps
-class MicroPythonDeps:
-    time_time        = utime.time      # seconds, int
-    time_perf_time   = utime.ticks_us  # us, int
-    time_ms          = utime.ticks_ms  # ms, int
-    time_sleep_ms    = utime.sleep_ms  # ms, int
-    os_path_basename = lambda p: p     #NOTE: TEMPORARY fix
-    os_rename        = os.rename
-    os_unlink        = os.remove
-    filesize         = lambda filename: os.stat(filename)[6]
-    hashlib_sha256   = uhashlib.sha256
-    message          = print
-    crc16            = lambda data, length: crc16_mp_v(data[:], length)  # viper enhanced fast algorithm
-
-    @staticmethod
-    def decode_to_str(b:bytes) -> str:
-        # There is no "errors='ignore'" on Pico
-        try:
-            return b.decode()
-        # Pico throws UnicodeError, not UnicodeDecodeError
-        except UnicodeError:
-            print("unicode decode error")
-            return "<UnicodeError>"  # this is the best we can do
-
-dttk.set_deps(MicroPythonDeps)
+print("OPTION=%s" % myboard.OPTION)
 
 class UStats:
     def __init__(self):
@@ -79,20 +23,20 @@ class UStats:
         ##self.rdsizes  = []
 
     def update(self, nb:int) -> None:
-        ##uart_stats.data += 1
+        ##self.data += 1
         # MINMAX for what we read in each chunk from the uart peripheral
-        if uart_stats.minbytes is None:
-            uart_stats.minbytes = nb
-        elif nb < uart_stats.minbytes:
-            uart_stats.minbytes = nb
+        if self.minbytes is None:
+            self.minbytes = nb
+        elif nb < self.minbytes:
+            self.minbytes = nb
 
-        if uart_stats.maxbytes is None:
-            uart_stats.maxbytes = nb
-        elif nb > uart_stats.maxbytes:
-            uart_stats.maxbytes = nb
+        if self.maxbytes is None:
+            self.maxbytes = nb
+        elif nb > self.maxbytes:
+            self.maxbytes = nb
 
         ## keep a list of read sizes into the buffer
-        ##DISABLED uart_stats.rdsizes.append(nb)
+        ##DISABLED self.rdsizes.append(nb)
 
     def __str__(self) -> str:
         return "rxfull:%d minbytes:%s maxbytes:%s" % (
@@ -136,7 +80,7 @@ class UartLink(dttk.Link):
         data.read_with(self._uart.write)
         if self.INTER_PACKET_DELAY_MS is not None:
             ##print("delay %d ms" % self.INTER_PACKET_DELAY_MS)
-            utime.sleep_ms(self.INTER_PACKET_DELAY_MS)
+            platdeps.time_sleep_ms(self.INTER_PACKET_DELAY_MS)
 
     def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
         _ = info  # argused
@@ -176,7 +120,8 @@ class UartRadio(dttk.Link):
         self.recvinto = self._packetiser.recvinto
 
 
-radio = UartRadio(UART_PORT, UART_BAUD_RATE, UART_TX_GP, UART_RX_GP)
+radio = UartRadio(myboard.UartCfg.PORT, myboard.UartCfg.BAUD_RATE,
+                  myboard.UartCfg.TX_GPN, myboard.UartCfg.RX_GPN)
 
 link_manager = dttk.LinkManager(radio)
 
@@ -184,6 +129,7 @@ txp = dttk.Progresser("tx").update
 ##tx_bar = dttk.ProgressBar()
 
 def tx_progress(msg:str or None=None, value:int or None=None) -> None:
+    _ = value  # argused
     ##if value is not None and msg is not None:
     ##    tx_bar.set_value(value)
     ##    msg = "%s %s" % (str(tx_bar), msg)
@@ -194,6 +140,7 @@ rxp = dttk.Progresser("rx").update
 ##rx_bar = dttk.ProgressBar()
 
 def rx_progress(msg:str or None=None, value:int or None=None) -> None:
+    _ = value  # argused
     ##if value is not None and msg is not None:
     ##    rx_bar.set_value(value)
     ##    msg = "%s %s" % (str(rx_bar), msg)
@@ -203,7 +150,7 @@ def rx_progress(msg:str or None=None, value:int or None=None) -> None:
 #----- TRANSFER TASKS ----------------------------------------------------------
 def send_file_task(filename:str) -> dttk.Sender: # or exception
     """Non-blocking sender for a single file (as a task that has a tick())"""
-    return dttk.FileSender(filename, link_manager, progress_fn=tx_progress, blocksz=BLOCK_SIZE)
+    return dttk.FileSender(filename, link_manager, progress_fn=tx_progress, blocksz=myboard.UartCfg.BLOCK_SIZE)
 
 def receive_file_task(filename:str) -> dttk.Receiver: # or exception
     """Non-blocking receiver"""
@@ -224,12 +171,11 @@ def receive_file_task(filename:str) -> dttk.Receiver: # or exception
 
 def print_stats(name:str, task) -> None:
     """Host-specific print_stats for sender or receiver"""
-    MicroPythonDeps.message("stats for:%s" % name)
-    MicroPythonDeps.message("  uart:     %s" % str(uart_stats))
-    MicroPythonDeps.message("  link:     %s" % str(dttk.link_stats))
-    MicroPythonDeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    MicroPythonDeps.message("  transfer: %s" % task.get_stats())
-
+    platdeps.message("stats for:%s" % name)
+    platdeps.message("  uart:     %s" % str(uart_stats))
+    platdeps.message("  link:     %s" % str(dttk.link_stats))
+    platdeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
+    platdeps.message("  transfer: %s" % task.get_stats())
 
 #END: ftag_pico.py
 

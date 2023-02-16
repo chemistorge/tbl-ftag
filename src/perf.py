@@ -1,13 +1,9 @@
 # perf.py  29/01/2023  D.J.Whale - simple performance monitor toolkit
 # works on HOST and PICO (using deps)
+
+from platdeps import *
 PERF_ON = False
-
 #IDEA: could put the perf on/off check inside the decorators
-
-deps = None
-def set_deps(d) -> None:
-    global deps
-    deps = d
 
 def traceall(fn:callable) -> callable:
     def wrap_traceall(*args, **kwargs):
@@ -61,9 +57,9 @@ def do_measure(*args) -> callable:
             except KeyError:
                 stats = perfs[name] = MStats()
 
-            start_time = deps.time_perf_time()
+            start_time = time_perf_time()  #platdeps
             res = fn(*fnargs, **fnkwargs)
-            end_time = deps.time_perf_time()
+            end_time = time_perf_time()  #platdeps
             stats.update(end_time - start_time)
 
             return res
@@ -86,7 +82,7 @@ def do_tbc(fn:callable) -> callable:
                 self.maxcall = None
 
             def just_called(self):
-                now = deps.time_perf_time()
+                now = time_perf_time()  #platdeps
 
                 if self.last_call_time is not None:
                     duration = now - self.last_call_time
@@ -94,7 +90,7 @@ def do_tbc(fn:callable) -> callable:
                     if self.maxcall is None or duration > self.maxcall: self.maxcall = duration
 
             def just_returning(self):
-                self.last_call_time = deps.time_perf_time()
+                self.last_call_time = time_perf_time()  # platdeps
 
             def __repr__(self) -> str:
                 return "mincall:%s maxcall:%s" % (str(self.mincall), str(self.maxcall))

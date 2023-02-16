@@ -11,6 +11,7 @@ try:
     from ftag_pico import *
 
 except ImportError:
+    ##print(e)
     # we are on Host
     from ftag_host import *
 
@@ -41,12 +42,12 @@ def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS) -> None:
     if pps is not None:
         print("  throttled at %d PPS" % pps)
         while True:
-            start_ms = dttk._deps.time_ms()
+            start_ms = platdeps.time_ms()
             if not sender.tick(): break  # finished
             if pps is not None:
-               time_per_packet_ms = dttk._deps.time_ms() - start_ms
+               time_per_packet_ms = platdeps.time_ms() - start_ms
                delay_time_ms = int((1000 - (time_per_packet_ms * pps)) / pps)
-               dttk._deps.time_sleep_ms(delay_time_ms)
+               platdeps.time_sleep_ms(delay_time_ms)
     else:
         sender.run()
 

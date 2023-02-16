@@ -156,28 +156,6 @@ a long time, and file corruption doesn't occur.
 work, but there are some differences in APIs in CircuitPython, such as where
 the UART is imported from, that might make the demos fail to run at present.
 
-## Future Work
-
-* We might move over to uasyncio, once the comparative performance between
-the tasking.py cooperative scheduling and uascync has been characterised.
-
-* Data-transfer examples for telemetry will be added (e.g. sensor data)
-
-* Further work will be done to significantly improve the transfer performance,
-e.g. further improvements to the Buffer object and data slicing operations, and
-on the Pico, an assembly language based CRC16 algorithm.
-
-* A demo with the RFM69 radio will be built, that broadcasts data in the
-433MHz ISM band and receives files and telemetry on 1 or more ground stations.
-
-* A demo with the RFM95 radio will be built, that broadcasts data on a slow
-schedule as a sort of background file transfer service over a LoRa and LoRaWAN
-configuration.
-
-* Further work on bringing in SDCard support for storing files, and storing
-partial files with their receive bitmaps, to allow recovery from power failure.
-
-
 ## Contributions
 
 * The RFM69 radio code started off being based on code from this repo:
