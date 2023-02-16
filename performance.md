@@ -142,7 +142,7 @@ on data sent over a UART running at 115200bps. So additional end to end wait tim
 will affect some of the figures.
 
 
-# 15/02/2023: memoryview() and rewritting the Buffer abstraction
+# 16/02/2023: memoryview() and rewritting the Buffer abstraction
 
 ## The Problem
 
@@ -172,9 +172,11 @@ There is a well known approach to this in the industry called 'zero copy buffers
 whereby data is filled into buffers that are either chains of little parts
 with headers and data and footers, or the buffer is intentionally filled in
 and accessed by moving the start and end offsets as it moves up and down
-the stack. This removes the overhead associated with cop
+the stack. This removes the overhead associated with copying data.
 
-Adam Dunkels Lightweight IP (LwIP) uses a protobuf scheme, whereby pbufs
+[Adam Dunkels Lightweight IP (LwIP)](https://en.wikipedia.org/wiki/LwIP) 
+uses a protobuf scheme, whereby 
+[pbufs](https://www.nongnu.org/lwip/2_1_x/structpbuf.html)
 can be chained together and processed internally by the stack quite
 efficiently. But the problem with this is that the stack then has to also
 deal with garbage collection of buffers, and you can't just index those
@@ -189,13 +191,40 @@ the stack. We wrote a ```Buffer()``` abstraction to manage this offsetting,
 and went through about 3 versions to get to the stats collected earlier.
 But the performance was still shoddy.
 
+
+## bytes() vs bytearray()
+
+A ```bytearray()``` is a mutable data structure that you can read and write,
+contract and extend at will. A ```bytes()``` is an immutable data structure.
+Some operations on a ```bytearray()``` will cause memory to expand or move,
+but the memory associated with a ```bytes()``` stays current and unmodified
+until the object has zero references left and it gets deleted by the 
+garbage collector.
+
+You might usefully at the REPL prompt in Python use ```dir(bytearray)```
+and ```dir(bytes)``` to see some of the main differences between them.
+
+Using a ```bytes()``` to store data is quite a good design pattern, because
+of its immutability - you can pass it up and down a stack and be sure that
+nothing gets accidentally changed along the way; whereas a ```bytearray()```
+can be changed by any software that has a reference to it. This can produce
+some really hard to find bugs, so the immutability of a ```bytes()``` forces
+you to code a bit more 'functionally' where data is returned from a function,
+it gets consumed by various services, and finally it disappears when it is
+no longer needed.
+
+This is actually a critical point to understand, because it is common to see
+a lot of evidence of mixing of ```bytes()``` and ```bytearray()``` throughout
+a codebase, with no real policy as to where one or the other is used.
+
+
 ## The Python Buffer Protocol
 
-After a lot of reading Python docs and little experiments at the REPL prompt,
-it because clear that the best thing to do is to try to get Python to always
-use a thing called the 'Buffer Protocol'. This is a C-side API that you
-can't access directly in Python, but if you make the right choices in your
-design, you can force Python to make good use of it.
+One thing that ```bytes()``` and ```bytearray()``` do have in common though,
+is that they both support the 
+[Python Buffer Protocol](https://docs.python.org/3/c-api/buffer.html). 
+This is a C-side API that you can't access directly in Python, but if you make 
+the right design choices, you can force Python to make good use of it.
 
 The Buffer Protocol allows fast direct memory access to blocks of bytes
 in the memory blocks of your data structures, all while keeping the code
@@ -231,20 +260,246 @@ While this doesn't make much difference on a 4GHz machine, or with 8 bytes of
 data, it does make a significant difference on a 125MHz Raspberry Pi Pico,
 and also a significant difference if you have very large buffers.
 
-## Slices of data
+## Avoiding copies of data
 
-Yes Yes, but the real problem here to solve, was to provide fast read, write,
-and copy access to limited ranges of a bytearray (inside my ```Buffer()``` object).
+The real problem here to solve, was to provide fast read, write, and copy access 
+to limited ranges of a bytearray (inside my ```Buffer()``` object).
 How can we manage the offsets and still get fast access to the internal
-memory of the ```bytearray```? And how, specifically, can we write to just a
-middle portion of a ```bytearray``` without Python first taking an independent
-copy of that slice, as happens with ```data = ba[3:15]```?
+memory of the ```bytearray```? 
 
-YOU'LL HAVE TO WAIT UNTIL THE NEXT INSTALLMENT!!
+Let's assume we have a 3 byte header, and a 2 byte CRC footer in an incoming
+received message, and that once those are processed, we want to strip them
+off and pass the inner payload data up to the application (so that it has
+the correct length and contains the correct data without headers and
+footers).
+
+The following code illustrates the problem
+
+```python
+packet = bytes(b'HDR12345678CC')
+payload = packet[3:-2]  # takes a copy
+```
+
+The subscript slicing provides neat and easy access to the inner payload,
+but it initiates an independent copy of the data. For a small packet that
+is not much overhead (and the copy happens in the C-domain due to the
+Buffer Protocol), but you get an independent copy of the data, that will
+eventually need to be garbage collected. In a large network stack that has
+to be performant, all these little copies add up (especially as packet sizes
+are increased to improve throughput), and a lot of extra garbage collection
+happens. Adding significant garbage collection into the transmit or receive
+pipeline eventually bites back, especially on a slow and memory constrained 
+system such as those that MicroPython targets; you ultimately get a large
+pause in processing, while the garbage is collected, to make way for new
+objects.
+
+## Enter memoryview(), the saviour
+
+Python has a really useful object called a ```memoryview()``` which provides
+a virtual window over any object that is bytes-like; it supports the Buffer
+Protocol, and the inner object that it wraps supports the buffer protocol.
+
+An example will help here:
+
+```python
+packet = bytes("HDR12345678CC")
+mv = memoryview(packet)
+
+packet[1]      # normal read-based indexing
+mv[1]          # also works with mv
+packet[3:-2]   # slice access, but takes a copy
+mv[3:-2]       # slice access, but does NOT take a copy
+```
+
+The key point to note here is that ```memoryview()``` is a wrapper around
+any object, it provides read (and if supported by the inner object) write
+access, in a way that doesn't require the object to be copied in order to
+access slices.
+
+This is precisely what we need for our packet buffers; it means that we can
+provide LHS and RHS indexes and move these indexes as the packet moves up
+and down the stack, but the same underlying memory is always referenced.
+When we move the LHS and RHS and access the inner data payload as a slice,
+we get the same bytes, but an internal copy is not required, so there is
+no inevitable garbage collection later. We can also, if required, choose
+for the inner object to be immutable (```bytes()```) or mutable (```bytearray()```)
+depending on the level of access we want to provide to it throughout the
+application.
+
+## Slicing, and hiding the slice
+
+The final piece of the puzzle, is to keep track of the LHS and RHS offsets
+into the packet buffer. One way might be to hold two variables, thus:
+
+```python
+packet = b'HDR12345678CC'
+mv = memoryview(packet)
+
+lhs = 0
+rhs = 13
+mv[lhs:rhs]  # the whole packet
+
+# strip header
+lhs = 3
+mv[lhs:rhs]  # a view, no copies!
+
+# strip CRC footer
+rhs = 11
+mv[lhs:rhs]  # a view, no copies!
+```
+
+It's a pain to keep the lhs and rhs variables together.
+An alternative way would be to use a ```slice()``` object.
+A ```slice()``` is another wrapper object that enapsulates the full address
+of a start, a stop (and optionally a step) of any object. It can be used
+inside the subscript operator ```[ ]``` and forms a multi-valued address.
+
+```python
+packet = b'HDR12345678CC'
+mv = memoryview(packet)
+view = slice(0, len(packet))
+mv[view]        # the whole packet
+
+view = slice(view.start+3, view.stop)
+mv[view]        # the header is stripped
+
+view = slice(view.start, view.stop-2)
+mv[view]        # the CRC footer is also stripped
+
+mv[:]           # the whole packet
+
+mv[2] = 42      # make a change in the header
+mv[0:3]         # just the header, modified
+```
+
+While slices are super useful as a 'fully ranged address', they are immutable;
+so every time you modify the slice, you create a new object. But you can pass
+them around as a sort of 'template' for an object and given them a name,
+which works well for fixed sized objects with fixed sized fields in them, thus:
+
+```python
+HEADER = slice(0, 3)
+BODY   = slice(3, 11)
+CRC    = slice(11, 13)
+packet = bytes('bHDR12345678CC')
+
+packet[HEADER]
+packet[BODY]
+packet[CRC]
+```
+
+However, in our ```Buffer()``` use case, there is an even neater trick with
+slices that we can use.
+
+## __getitem__ and slice()
+
+A class that has a ```__getitem__``` function, can be used to provide indexing
+and subscripting support. The two are actually slightly different, but they
+are implemented the same way.
+
+Indexing means a single entry like: ```a[1]``` and Subscripting means a range
+such as ```a[3:7]``` or ```a[3:-2]```.
+
+An example makes this easier to understand.
+
+```
+class Packet:
+    def __init__(self, data:bytes):
+        self._buf = bytearray(data)
+        
+    def __getitem__(self, idx):
+        print("index:%s" % idx)
+        return self._buf[idx]
+        
+p = Packet(b'HDR12345678CC)
+```
+
+With this definition of packet, we can access individual bytes of the packet,
+without exposing the inner ```bytearray``` to the caller:
+
+```python
+# indexing example
+print(p[1])         # index:1 68 (D)
+print(p[2])         # index:2 82 (R)
+```
+
+The real power of this, is that python also supports subscripting with the
+```__getitem__``` method, thus:
+
+```python
+print(p[0:3])       # index:slice(0,3,None) HDR
+print(p[3:11])      # index:slice(3,11,None) 12345678
+print(p[HEADER])    # index:slice(0,3,None) HDR
+print(p[BODY])      # index:slice(3,11,None) 12345678
+```
+
+This works, because Python passes an ```int``` for indexing,  and a
+```slice()``` for subscripting. Because the inner ```bytearray``` of ```Packet```
+also supports both ```int``` and ```slice``` indexing and subscripting,
+this all comes out in the wash.
+
+It is worth noting that if your inner object doesn't support subscripting
+but does support indexing, you can work around that as follows:
+
+```python
+   def __getitem__(self, idx):
+       if isinstance(idx, int):
+           # indexing code here
+       elif isinstance(idx, slice):
+           # slicing code here
+       else: assert False, "unexpected:%s" % str(type(idx))
+```
+## A neat trick to prevent unintended referencing
+
+What is wrong with this code?
+
+```python
+packet = b'HDR12345678CC'
+hdr = packet[0:3]       # a copy, of the header
+body = packet[3:11]     # a copy, of the body
+crc  = packet[11:]      # a copy, of the crc
+
+whole = packet          #<<< a REFERENCE to the same object
+```
+
+Yes, that's right, the ```whole``` is not a copy of the buffer, it is a
+reference to the same buffer. Sometimes this is important.
+
+You can fix it like this:
+
+```python
+whole = packet[0:len(packet)]  # messy
+whole = packet[:]              # much cleaner, uses BufferProtocol to copy
+```
+
+The same works on the LHS of an assignment, so if you are copying into a new
+bytearray, the same occurs:
+
+```python
+packet = b'HDR12345678CC'
+hdr = bytearray(20)
+hdr = packet[0:3]           #<<< takes a copy, then assigns that to hdr
+                            # original bytearray(20) is wasted
+
+# better
+hdr = bytearray(20)
+hdr[0:3] = packet[0:3]      # Buffer Protocol used to copy 3 bytes into the bytearray(20)
+
+# or even...
+ten = b'1234567890'
+buf = bytearray(10)
+buf[:] = ten[:]             # copy 10 bytes from ten to buf
+                            # will expand buf if it is too small
+                            # but 'buf' is not a REFERENCE to ten, it is a copy
+```
+
+## The final piece: Building an encapsulated Buffer()
+
+YOU'LL HAVE TO WAIT UNTIL THE NEXT INSTALLMENT!
 
 ## New performance measures
 
-As a teaser, here are the new performance measures with the improved code
+Teaser, here are the performance stats with the new Buffer() added.
 
 ```
 Unthrottled tx stats:

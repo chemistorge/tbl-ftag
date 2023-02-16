@@ -1,5 +1,10 @@
 # File Transfer Agent (FTAG)
 
+Note, for those following along at home. This code is currently being significantly
+re-optimised to get good performance within MicroPython on a Raspberry Pi Pico.
+
+You can follow that story live, as it happens, [here](performance.md)
+
 ## What is this?
 
 This is a set of code libraries, written in Python, with the purpose of
@@ -152,9 +157,6 @@ work, but there are some differences in APIs in CircuitPython, such as where
 the UART is imported from, that might make the demos fail to run at present.
 
 ## Future Work
-
-* A lot of work is currently going on with optimisation. You can read our
-ongoing story about that [here](performance.md)
 
 * We might move over to uasyncio, once the comparative performance between
 the tasking.py cooperative scheduling and uascync has been characterised.
