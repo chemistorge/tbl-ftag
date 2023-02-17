@@ -493,35 +493,245 @@ buf[:] = ten[:]             # copy 10 bytes from ten to buf
                             # but 'buf' is not a REFERENCE to ten, it is a copy
 ```
 
-## The final piece: Building an encapsulated Buffer()
+# 17 Feb 2023: The final piece: Building an encapsulated Buffer()
 
-YOU'LL HAVE TO WAIT UNTIL THE NEXT INSTALLMENT!
+If you look in file [dttk.py](src/dttk.py) at the ```Buffer()``` class, you
+will see the most up to date version of this code. However, to pull everything
+we have learnt into one final conclusion, let's work through some of the
+key techniques and look at how they surface inside the ```Buffer()```
 
-## New performance measures
+## Typical workflow of a Buffer()
 
-Teaser, here are the performance stats with the new Buffer() added.
+A typical usage workflow for the buffer, sees the buffer being recycled rather
+than recreated on every use (this reduces garbage collection load a little, and
+is a common technique used with Java to get good garbage collection performance
+in highly scaleable systems).
+
+For the send workflow:
+
+```python
+b = Buffer()                # create it, once, at program start
+...
+b.extend(b'DATA*HERE*')     # application puts some data in the buffer
+b.prepend(b'HDR')           # a header is tacked onto the LHS
+b.extend((0x3C, 0x2D))      # a CRC is tacked onto the RHS
+...                         # stuff here to use/send the buffer
+b.reset()                   # reset LHS RHS pointers and recycle it
+```
+
+For the receive workflow:
+
+```python
+b = Buffer()                # create it, once, at program start
+...
+b.write_with(uart.readinto) # zero-copy fill the buffer with data from a UART
+...
+b.ltrunc(3)                 # remove the header, once processed
+b.rtrunc(2)                 # remove the CRC footer, once processed
+file_write(b)               # write the active range/user payload to a file
+...
+b.reset()                   # reset the LHS and RHS pointers and recycle it
+```
+
+We'll dig into the ```write_with()``` method a little later.
+
+## using the memoryview() on a bytearray()
+
+To get good read and write performance with zero-copy semantics, the core
+internal data structure is a ```bytearray``` wrapped with a ```memoryview```
+for the 'active (used) range' of the buffer. This way it can expand and contract
+without the need for any copying, providing we maintain the LHS and RHS offsets
+correctly:
+
+```python
+class Buffer:
+    DEFAULT_START = 10  # allow LHS space for headers
+    DEFAULT_SIZE = 128
+
+    def __init__(self, initial_value=None, size:int=DEFAULT_SIZE, start:int=DEFAULT_START):
+        self._mv = memoryview(bytearray(size))
+        self._start = self._end = self._initial_start = start
+        self._used = self._mv[start:start]
+        if initial_value is not None:
+            self.extend(initial_value)
+```
+
+An initial_value can be provided, and you can adjust the overall buffer size and 
+start offset. Remember, the start offset is used to allow the LHS to expand out 
+along the send pipeline as headers are prepended. In this implementation,
+if your initial size and offset are wrong, things break further down the
+pipeline. (Note, version 2 of this class had a grow feature, but it turned out
+to be more complex, and things perform better if you know by design what your
+worst case buffer size and header requirements are, which you usually do
+anyway).
+
+The ```used``` is a ranged slice on the memory view. An earlier version did
+use a ```slice()``` object here to maintain LHS and RHS view pointers, but
+every time you change them you have to ditch it and create a new slice,
+because slices are an immutable object. So the ```used``` variable basically
+does the same in a cleaner way.
+
+## Magic dunder accessors
+
+These 4 dunder accessors provide all the magic to both index and subscript
+the internal buffer, for all useful read and write use-cases:
+
+```python
+    def __setitem__(self, idx, value):
+        self._used[idx] = value
+
+    def __getitem__(self, idx):
+        return self._used[idx]
+
+    def __len__(self):
+        return len(self._used)
+
+    def __iter__(self):
+        return iter(self._used)
+```
+
+Remember, that Python might pass an ```int``` or a ```slice``` as the ```idx```
+parameter; because ```self._used``` is actually a sliced ```memoryview```
+object, it supports all the required methods that make all this work seamlessly,
+while also enforcing the LHS and RHS pointers for you. If you try to break
+outside of the bounds of LHS:RHS, you get the usual ```IndexError``` exception,
+as expected.
+
+## Appending a single item
+
+```append()``` is really a special case of ```extend()```, and an early version
+of ```Buffer``` detected the type of the parameter and selected the correct operation.
+However, the append/extend protocol is more compliant with other bytes-like
+objects, so we split it out again:
+
+```python
+    def append(self, value:int) -> None:
+        new_used = self._mv[self._start: self._end+1]  # exception if full
+        length = self._end - self._start
+        new_used[length] = value
+        self._end += 1
+        self._used = new_used
+```
+
+First, the viewed range is extended by one slot at the RHS, and this is done
+first, because if your view or buffer size is exceeded, you get the usual
+exception here, and no state has been updated.
+
+Then the data is inserted, RHS updated, and it's done.
+
+## Extending with multiple items
+
+```extend()``` takes an iterable, so anything that generates multiple
+integer values, and each of those get added to the RHS.
+
+```python
+    def extend(self, values) -> None:
+        len_old_used = len(self._used)
+        len_values = len(values)
+        # extend the viewed range to accept the new data
+        new_used = self._mv[self._start:self._end+len_values]  # exception if full
+
+        try:
+            new_used[len_old_used:len_old_used+len_values] = values
+        except: #Cpython=TypeError, MicroPython=NotImplementedError
+            # no it isn't, so iterate it instead
+            for i in range(len_values):
+                new_used[len_old_used+i] = values[i]
+        # change last, in case of exception
+        self._end += len_values
+        self._used = new_used
+```
+
+Again, the view is extended first in case it exceeds the allowed bounds,
+in which case you get the usual exception. 
+
+The try/except block was required here because the failure modes vary between
+CPython and MicroPython, they throw different exceptions. This block covers
+two separate cases:
+
+1. you have passed a ```values``` that is a bytes-like object and supports
+the Python Buffer Protocol; in which case, this is a super speedy C-level copy.
+
+2. you have passed a ```value``` that is more complex and is not a bytes-like
+object (e.g. a list of integers, or a generator). In that case, values are
+iterated (as it is assumed to be an iterable of int) and filled into the internal
+array one value at a time.
+
+Finally, the RHS pointer is updated and the state changed. Again, this is
+done last, in case of any errors, in which case the state is not left in
+an indeterminate mess.
+
+NOTE: ```prepend1()``` and ```prepend()``` use a similar approach, but
+work on the LHS.
+
+## Truncating to remove headers and footers
+
+Left and right truncation are mostly self explanatory and very similar:
+
+```python    
+def ltrunc(self, amount:int) -> None:
+    new_used = self._mv[self._start+amount:self._end]  # exception if out of range
+    self._start += amount
+    self._used = new_used
+```
+
+## Buffer readinto() without exposing the internals
+
+One final issue is to provide a size-preserving method of writing to the
+internal buffer, such that internal state variables don't need to break out
+from the encapsulation.
+
+A typical use-case is reading from a UART peripheral:
+
+```python
+by = uart.read()         # creates a new bytes object
+...
+ba = bytearray(20)
+nb = uart.readinto(ba)  # fills the byte array, returns number of bytes filled
+
+b = Buffer()
+b.write_with(uart.readinto)
+```
+
+As you can see from above, the ```UART``` object in MicroPython usefully
+provides a ```readinto()``` method that will read data into a provided
+bytearray (or anything that is indexable and writeable, actually).
+
+But it returns the number of bytes written, and the internal ```memoryview``` inside
+our ```Buffer``` is maintained with a ```self._end``` and a ```self._used``` pair
+of variables. These variables need to be updated so that if the UART only reads
+5 bytes into our 128 byte buffer, the end and used view are both correctly updated.
+
+# Performance measures
+
+Here are the performance stats with the new ```Buffer()``` added.
 
 ```
 Unthrottled tx stats:
-  tx transfer: T:6 blk:695 by:34710 PPS:115 BPS:5785   <<< WOW,
+  tx transfer: T:6 blk:695 by:34710 PPS:115 BPS:5785   <<< Significantly faster
 ```
 
-The receiver falls over with errors at that rate - but STONKING!
+The receiver is currently not quite as performant as the transmitter; there
+is more work there to do, to keep up with this faster sender, so we throttle
+our sends at a level that the receiver can currently sustain:
 
 ```
 Throtted at 40 packets per second
   tx transfer: T:72 blk:2780 by:138840 PPS:38 BPS:1928
 ```
 
-That's more like it!
+## Adding in resilience
+
+Now we have moved out of the '1 block per second' realm and into the '40'
+blocks per second' realm, we can use that extra available time to add in some
+resilience of the metadata and data records:
 
 ```
-Adding in resilient re-sending of data:
-    START_META   = 8   # first 8 blocks are metadata message
-    META_EVERY_N = 50  # send a new metadata message every N blocks
-    NUM_REPEATS  = 3   # number of times to re-send the same block (0 means just send once)
+START_META   = 8   # first 8 blocks are metadata message
+META_EVERY_N = 50  # send a new metadata message every N blocks
+NUM_REPEATS  = 3   # number of times to re-send the same block (0 means just send once)
     
-  rx transfer: T:75 blk:695 by:34710 PPS:9 BPS:462    
+rx transfer: T:75 blk:695 by:34710 PPS:9 BPS:462    
 ```
 
 So, a transfer of a 35K jpeg (our target image size) over a UART, sending
@@ -531,7 +741,9 @@ per block) transfers in a little over 1 minute. Compared to our early
 experiments of 1 block per second with no repeats, that's 10 times
 increase in transfer speed, with a 4 times increase in resilience.
 
+## Final installment: viper compilation in a platform-independent way
 
+THIS WILL BE THE SUBJECT OF THE FINAL INSTALLMENT.
 
 # Future Work
 
@@ -543,10 +755,6 @@ architecture. This will improve responsiveness to incoming packets, but
 more importantly it will also enable the multi-session multiplex feature to
 be opened up, whereby multiple concurrent transfers can work alongise each
 other.
-
-* Do a comparative study between our simple cooperative scheduling framework,
-and look at whether the ```uasync``` module will be a better way to schedule
-work and get it to execute in a timely and responsive way.
 
 * apply the viper compiler to more of the code, and find an easy way to
 seamlessly switch it on and off as we move code between host python and
@@ -561,6 +769,10 @@ can 'get on with' transferring some bytes on a slow link, while calculating
 the next few bytes, you get the benefits of overlapped work. But if code
 calls-in too often (e.g. every byte as it is generated) the additional
 call-return overheads swamp execution time.
+
+* Do a comparative study between our simple cooperative scheduling framework,
+and look at whether the ```uasync``` module will be a better way to schedule
+work and get it to execute in a timely and responsive way.
 
 
 

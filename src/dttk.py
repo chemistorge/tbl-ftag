@@ -445,6 +445,8 @@ class Buffer:
         try:
             ##new_used[-len_old_used:] = values
             new_used[len_old_used:len_old_used+len_values] = values
+        #TODO: CPython and MicroPython both support both exceptions,
+        #so can probably safely list either here.
         except: #Cpython=TypeError, MicroPython=NotImplementedError
             # no it isn't, so iterate it instead
             for i in range(len_values):
@@ -470,6 +472,8 @@ class Buffer:
         try:
             ##new_used[-len_old_used:] = values
             new_used[:len_values] = values
+        # TODO: CPython and MicroPython both support both exceptions,
+        # so can probably safely list either here.
         except:  # TypeError on Cpython, NotImplementedError on MicroPython
             # no it isn't, so iterate it instead
             for i in range(len_values):
@@ -491,10 +495,14 @@ class Buffer:
         self._used = new_used
 
     def read_with(self, user_fn: callable) -> int or None:
+        #NOTE: can now do this as nb = user_fn(buffer[:])
         ## user_fn = uart.write(bytes-like) -> int
         return user_fn(self._used)  # from start to end
 
     def write_with(self, user_fn: callable) -> int or None:
+        #NOTE: This is required, so that the internal end/used can be updated
+        #in a transactionally safe way, that doesn't expose the internal
+        #state variables to the caller.
         ## user_fn = uart.read(bytes-like) -> int
         self.reset()  # clear buffer to start
         nb = user_fn(self._mv[self._start:])  # whole available buffer
