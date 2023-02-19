@@ -1,13 +1,10 @@
 # Performance Optimisation
 
-This is a live document that captures our current view on optimising the
-performance of this communications code. As such, it will be updated with
-facts and figures and analysis as the project progresses.
+This is a blog, about experiences and insights gained, during the development
+and optimisation of a File Transfer Agent. The File Transfer Agent is written
+using MicroPython, and runs on a Raspberry Pi Pico.
 
-The latest change added since last version, is the section on ```memoryview()```.
-
-
-## The Importance of Performance
+# The Importance of Performance
 
 Good performance of communications code is vital in order to get good end to end
 transfer rates. Because communications code is effectively one big pipeline
@@ -25,7 +22,7 @@ aims to collect together all of the various techniques and insights captured
 throughout this process.
 
 
-# 08/02/2023 The Starting Point
+# 08 Feb 2023: The Starting Point
 
 The codebase was first completely developed in standard host Python
 (CPython) 3. Specifically this version of Python 3.6 on my (old) Mac laptop:
@@ -142,7 +139,7 @@ on data sent over a UART running at 115200bps. So additional end to end wait tim
 will affect some of the figures.
 
 
-# 16/02/2023: memoryview() and rewritting the Buffer abstraction
+# 16 Feb 2023: memoryview() and Rewritting the Buffer Abstraction
 
 ## The Problem
 
@@ -260,7 +257,7 @@ While this doesn't make much difference on a 4GHz machine, or with 8 bytes of
 data, it does make a significant difference on a 125MHz Raspberry Pi Pico,
 and also a significant difference if you have very large buffers.
 
-## Avoiding copies of data
+## Avoiding Copies of Data
 
 The real problem here to solve, was to provide fast read, write, and copy access 
 to limited ranges of a bytearray (inside my ```Buffer()``` object).
@@ -293,7 +290,7 @@ system such as those that MicroPython targets; you ultimately get a large
 pause in processing, while the garbage is collected, to make way for new
 objects.
 
-## Enter memoryview(), the saviour
+## Enter memoryview(), The Saviour
 
 Python has a really useful object called a ```memoryview()``` which provides
 a virtual window over any object that is bytes-like; it supports the Buffer
@@ -326,7 +323,7 @@ for the inner object to be immutable (```bytes()```) or mutable (```bytearray()`
 depending on the level of access we want to provide to it throughout the
 application.
 
-## Slicing, and hiding the slice
+## Slicing, and Hiding the Slice
 
 The final piece of the puzzle, is to keep track of the LHS and RHS offsets
 into the packet buffer. One way might be to hold two variables, thus:
@@ -449,7 +446,7 @@ but does support indexing, you can work around that as follows:
            # slicing code here
        else: assert False, "unexpected:%s" % str(type(idx))
 ```
-## A neat trick to prevent unintended referencing
+## A Neat Trick to Prevent Unintended Referencing
 
 What is wrong with this code?
 
@@ -493,14 +490,14 @@ buf[:] = ten[:]             # copy 10 bytes from ten to buf
                             # but 'buf' is not a REFERENCE to ten, it is a copy
 ```
 
-# 17 Feb 2023: The final piece: Building an encapsulated Buffer()
+# 17 Feb 2023: Building an Encapsulated Buffer()
 
 If you look in file [dttk.py](src/dttk.py) at the ```Buffer()``` class, you
 will see the most up to date version of this code. However, to pull everything
 we have learnt into one final conclusion, let's work through some of the
 key techniques and look at how they surface inside the ```Buffer()```
 
-## Typical workflow of a Buffer()
+## Typical Workflow of a Buffer()
 
 A typical usage workflow for the buffer, sees the buffer being recycled rather
 than recreated on every use (this reduces garbage collection load a little, and
@@ -535,7 +532,7 @@ b.reset()                   # reset the LHS and RHS pointers and recycle it
 
 We'll dig into the ```write_with()``` method a little later.
 
-## using the memoryview() on a bytearray()
+## Using the memoryview() on a bytearray()
 
 To get good read and write performance with zero-copy semantics, the core
 internal data structure is a ```bytearray``` wrapped with a ```memoryview```
@@ -571,7 +568,7 @@ every time you change them you have to ditch it and create a new slice,
 because slices are an immutable object. So the ```used``` variable basically
 does the same in a cleaner way.
 
-## Magic dunder accessors
+## Magic Dunder Accessors
 
 These 4 dunder accessors provide all the magic to both index and subscript
 the internal buffer, for all useful read and write use-cases:
@@ -597,7 +594,7 @@ while also enforcing the LHS and RHS pointers for you. If you try to break
 outside of the bounds of LHS:RHS, you get the usual ```IndexError``` exception,
 as expected.
 
-## Appending a single item
+## Appending a Single Item
 
 ```append()``` is really a special case of ```extend()```, and an early version
 of ```Buffer``` detected the type of the parameter and selected the correct operation.
@@ -619,7 +616,7 @@ exception here, and no state has been updated.
 
 Then the data is inserted, RHS updated, and it's done.
 
-## Extending with multiple items
+## Extending with Multiple Items
 
 ```extend()``` takes an iterable, so anything that generates multiple
 integer values, and each of those get added to the RHS.
@@ -664,7 +661,7 @@ an indeterminate mess.
 NOTE: ```prepend1()``` and ```prepend()``` use a similar approach, but
 work on the LHS.
 
-## Truncating to remove headers and footers
+## Truncating to Remove Headers and Footers
 
 Left and right truncation are mostly self explanatory and very similar:
 
@@ -675,7 +672,7 @@ def ltrunc(self, amount:int) -> None:
     self._used = new_used
 ```
 
-## Buffer readinto() without exposing the internals
+## Buffer readinto() Without Exposing the Internals
 
 One final issue is to provide a size-preserving method of writing to the
 internal buffer, such that internal state variables don't need to break out
@@ -702,7 +699,7 @@ our ```Buffer``` is maintained with a ```self._end``` and a ```self._used``` pai
 of variables. These variables need to be updated so that if the UART only reads
 5 bytes into our 128 byte buffer, the end and used view are both correctly updated.
 
-# Performance measures
+## Performance Measures
 
 Here are the performance stats with the new ```Buffer()``` added.
 
@@ -720,7 +717,7 @@ Throtted at 40 packets per second
   tx transfer: T:72 blk:2780 by:138840 PPS:38 BPS:1928
 ```
 
-## Adding in resilience
+## Adding in Resilience
 
 Now we have moved out of the '1 block per second' realm and into the '40'
 blocks per second' realm, we can use that extra available time to add in some
@@ -741,9 +738,152 @@ per block) transfers in a little over 1 minute. Compared to our early
 experiments of 1 block per second with no repeats, that's 10 times
 increase in transfer speed, with a 4 times increase in resilience.
 
-## Final installment: viper compilation in a platform-independent way
 
-THIS WILL BE THE SUBJECT OF THE FINAL INSTALLMENT.
+# 19 Feb 2023: Viper Compilation in a Platform-Independent Way
+
+The viper compiler was mentioned earlier, and we got really good speed-up
+of the crc16 algorithm using viper. This is unsurprising, because the
+crc16 is a very loop intensive algorithm and very self contained, so it
+is probably at the top end of what is achievable. Note that we didn't
+unroll the loops in this algorithm, and if viper doesn't unroll loops,
+that might add an additional speed increase.
+
+However, at this stage, the performance of crc16 was already many times
+faster than the pure Python version, we wanted to focus on how to turn
+this feature on in MicroPython, such that the host build didn't
+fall over.
+
+## Using Viper
+
+Let's just remind ourselves how viper is turned on:
+
+```python
+    @micropython.viper
+    def crc16():
+```
+
+It is a Python decorator. To be precise, it is a pseudo-decorator, because
+this doesn't work (as it would do if it was a real decorator):
+
+```python
+    def fn(): pass
+    micropython.viper(fn)
+```
+
+So, it's a hint to the MicroPython parser, to initiate viper for the function
+that follows. That's understandable, as there is no point compiling the
+function to bytecode, then compiling it to thumb machine code, it would
+be a waste of time. Also, more information will be available to the viper
+compiler if the Abstract Syntax Tree (AST) is available, compared to just
+a list of Python bytecodes.
+
+## Dependency Injection
+
+The first attempt at doing this was to use our existing ```deps``` approach,
+whereby we used 'dependency injection' to inject anything that varied between
+the platforms. crc16 on the MicroPython build was in a separate file, and
+injected as a new function, and ```dttk.py``` had a default implementation
+it used if nothing else was provided.
+
+This worked well, but the real problem with that approach was that every
+time we wanted to viper a function to increase speed on MicroPython,
+we had to inject it as an external dependency; and we knew that the code
+would get very messy as that expanded.
+
+
+## Platform Variances
+
+Re-thinking this, we decided that a more 'Pythonic' way to do dependency
+injection, would be to just import a platform dependency file that
+contained the dependencies, and make that file switch between platforms.
+We do this now by using: ```import platdeps```.
+
+Python memoises the imported modules to make re-imports efficient; i.e.
+the first time you import a module, it is fully parsed (if necessary)
+and loaded into memory, then stored in a cache in ```sys.modules[__name__]```.
+Next time that same module is imported, the cache is consulted, and if the
+name is known, the existing in memory copy is consulted. This is just called
+memoisation, a standard speed-up technique used by the generic area of
+computer science called 'Dynamic Programming'.
+
+At this point, we moved all platform dependencies into a ```platdeps.py``` module,
+and did a simple import test in that module to detect MicroPython - currently
+we look for the existence of module ```utime``` as a selector; but a better
+way might be to consult ```sys.platform``` in the future.
+
+The remaining problem now, is to scaffold the ```@micropython.viper```
+decorator, so that it exists on the host build, but does nothing.
+
+
+## Python Decorators
+
+A decorator is really just a function anyway. It takes a single function
+as a parameter, and it returns a function as the return result. The final
+returned result is assigned to the actual function object reference.
+
+An example will make this clearer:
+
+```python
+def unimplemented(fn:callable) -> callable:
+   def UNIMP():
+       exit("Unimplemented function called")
+   return UNIMP
+   
+def one():
+    pass
+    
+@unimplemented
+def two():
+    pass
+    
+one()
+two()  #<< "Unimplemented function called"
+```
+
+In the above example, the ```unimplemented``` decorator always returns a function
+that if called, stops with an "Unimplemented function called" error message.
+
+When Python compiles the ```two()``` function, it first compiles it to bytecode
+to create a new callable object, then it passes it to the ```unimplemented```
+decorator. What is returned by that, is then assiged to the variable ```two```,
+and when you use this in a function call context like: ```two()``` it runs the
+code associated with it.
+
+The upshot of this is, if you actually call the ```two()``` function, you
+are actually calling the ```UNIMP()``` function, and get the error message.
+
+You can do some really neat things with decorators. But all we really need
+here is a decorator that does NOTHING AT ALL, so that we can silently
+apply ```@micropython.viper``` to any function, and on a host build it is
+just ignored.
+
+## A Virtual Viper
+
+It's easier at this stage to just show you the solution:
+
+```python
+class micropython:
+    @staticmethod
+    def viper(fn:callable) -> callable:
+        return fn
+    
+@micropython.viper    
+def fast_stuff():
+    pass
+```
+
+Qhen the ```micropython.viper``` is used as a decorator on the host platform,
+it just returns the function it is decorating, which effectively achieves
+nothing, apart from allowing the decorator to be there in the first place.
+The function is not further decorated, it is just returned 'as is'.
+
+When the ```micropython.viper``` is used as a decorator on the MicroPython
+platform, because the scaffolding is not provided by the ```platdeps``` import,
+the MicroPython parser spots the pseudo-decorator and switches into the
+viper compiler for the next function, instead of the normal bytecode compiler.
+The function is parsed and compiled into thumb machine code, and it runs a
+lot faster inside MicroPython.
+
 
 # Future Work
 
