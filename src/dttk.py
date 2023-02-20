@@ -1,6 +1,12 @@
 # dttk.py  06/01/2023  D.J.Whale - data transfer toolkit
 # This module uses dependency injection, so it can work on multiple platforms.
 
+import platdeps
+from platdeps import micropython
+try:
+    from platdeps import ptr8
+except ImportError: pass
+
 import random  # available on host and pico
 import perf
 #IDEA, if don't import it, define perf as a scaffold here
@@ -8,14 +14,33 @@ import perf
 #e.g. import perf or import no_perf as perf
 import gc
 
-#----- PLATFORM DEPENDENCIES (INJECTED) ----------------------------------------
+@micropython.viper
+# TODO: use the memoryview/slice rather than pass length
+def crc16(data: ptr8, length: int) -> int:
+    CRC16_POLY = 0x1021  # CCITT-16  #TODO const()?
+    crcsum = 0xFFFF
 
-# message, filesize, os_path_basename, os_rename, hashlib_sha256, time_time
-deps = None
-def set_deps(d) -> None:
-    global deps
-    deps = d
-    perf.set_deps(d)
+    idx = 0
+    while length != 0:
+        # add_byte
+        v = 0x80
+        this_byte = data[idx]
+        idx += 1
+        while v != 0:
+            bit = crcsum & 0x8000
+            crcsum <<= 1
+            if this_byte & v:  crcsum += 1
+            if bit:            crcsum ^= CRC16_POLY
+            v >>= 1
+        length -= 1
+
+    # finish
+    for i in range(16):
+        bit = crcsum & 0x8000
+        crcsum <<= 1
+        if bit: crcsum ^= CRC16_POLY
+    return crcsum & 0xFFFF  #  keep within a U16
+
 
 #----- SUPPORT CLASSES AND METHODS ---------------------------------------------
 class ProgressBar:
@@ -74,7 +99,7 @@ class Progresser:
         self._stream = stream
         self._last_len = 0
         self._rate = rate
-        self._next = deps.time_time() + rate
+        self._next = platdeps.time_time() + rate
 
     def __call__(self, *args, **kwargs):
         return self.update(*args, **kwargs)
@@ -99,7 +124,7 @@ class Progresser:
         else:
             def time_to_output() -> bool:
                 if self._rate is None: return True
-                now = deps.time_time()
+                now = platdeps.time_time()
                 if now >= self._next:
                     self._next = now + self._rate
                     return True
@@ -256,7 +281,7 @@ class BitSet:
             else:     self._nsetflags -= 1
             ##assert 0 <= self._nsetflags <= self._nflags, "nsetflags corrupted? %d max %d" % (self._nsetflags, self._nflags)
             self._flags[word] = w2
-            ##deps.message(self._flags)
+            ##platdeps.message(self._flags)
 
     def __str__(self) -> str:
         """Get a string representation of all bits"""
@@ -278,31 +303,6 @@ class BitSet:
         perc = int(perc * 100)
         if perc == 100: perc = 99  # no rounding errors here
         return perc
-
-def crc16(data, length:int or None=None) -> int:
-    """calculates a CCITT-16 CRC"""
-    CRC16_POLY = 0x1021  # CCITT-16
-    if length is None: length = len(data)
-    crcsum = 0xFFFF
-
-    for idx in range(length):
-        # add_byte
-        v = 0x80
-        for _ in range(8):
-            this_byte = data[idx]
-            bit = crcsum & 0x8000
-            crcsum <<= 1
-            if this_byte & v:  crcsum += 1
-            if bit:            crcsum ^= CRC16_POLY
-            v >>= 1
-
-    # finish
-    for i in range(16):
-        bit = crcsum & 0x8000
-        crcsum <<= 1
-        if bit: crcsum ^= CRC16_POLY
-    return crcsum & 0xFFFF  # keep within a U16
-
 
 #----- SUPPORT FUNCTIONS -------------------------------------------------------
 
@@ -333,7 +333,7 @@ def hex_to_bin(in_hex:str):
 
         # read 2 hex, or error
         if pos+1 >= len(in_hex):
-            ##deps.message("warning:hex line is truncated?\n")
+            ##platdeps.message("warning:hex line is truncated?\n")
             break  # just return what we got
 
         def hexch(ch:str) -> int:
@@ -342,7 +342,7 @@ def hex_to_bin(in_hex:str):
             if '0' <= ch <= '9': return ord(ch) - ord('0')
             if 'a' <= ch <= 'f': return ord(ch) - ord('a') + 10
             if 'A' <= ch <= 'F': return ord(ch) - ord('A') + 10
-            ##deps.message("warning:invalid hex char (0x%02X) %c\n" % (ord(ch), ch))
+            ##platdeps.message("warning:invalid hex char (0x%02X) %c\n" % (ord(ch), ch))
             return 0  # try to keep going
 
         h = (hexch(in_hex[pos]) << 4) | hexch(in_hex[pos+1])
@@ -365,22 +365,21 @@ def hashstr(the_hash) -> str:
     else:
         return hexstr(the_hash)
 
+def sha256_of_file(filename: str) -> bytes:
+    """Calculate SHA256, as if we did:shasum -a 256 filename.bin"""
+    hasher = platdeps.hashlib_sha256()
+    with open(filename, "rb") as f:
+        while True:  #NOTE: pico iter() works differently
+            block = f.read(512)  # typical cluster size on a SDcard
+            if not block: break  #EOF
+            hasher.update(block)
+    digest = hasher.digest()
+    ##assert len(digest) == 32
+    return digest
+
 def get_file_info(filename:str) -> tuple: # (filesize:int, sha256:bytes)
     """File size and SHA256 of a file"""
-
-    def sha256_of_file(filename2: str):
-        """Calculate SHA256, as if we did:shasum -a 256 filename.bin"""
-        hasher = deps.hashlib_sha256()
-        with open(filename2, "rb") as f:
-            while True:  #NOTE: pico iter() works differently
-                block = f.read(512)  # typical cluster size on a SDcard
-                if not block: break  #EOF
-                hasher.update(block)
-        digest = hasher.digest()
-        ##assert len(digest) == 32
-        return digest
-
-    sz     = deps.filesize(filename)
+    sz     = platdeps.filesize(filename)
     sha256 = sha256_of_file(filename)
     return sz, sha256
 
@@ -390,127 +389,135 @@ low  = lambda b: b & 0xFF
 #===== EFFICIENT MEMORY BUFFERS ================================================
 
 class Buffer:
-    """A high performance, low copy overhead buffer for packets"""
-    # use this, instead of mixing bytes and bytearray, to avoid copy overhead
-    #NOTE: this implements the key buffer protocol methods, so it can be
-    #used mostly where a bytes() or a bytearray() is used, interchangeably.
+    DEFAULT_START = 10  # allow LHS space for headers
+    DEFAULT_SIZE = 128
 
-    DEFAULT_START = 10  # space for prepending headers
-    DEFAULT_SIZE  = 128
+    def __init__(self, initial_value=None, size:int=DEFAULT_SIZE, start:int=DEFAULT_START):
+        self._mv = memoryview(bytearray(size))
+        self._start = self._end = self._initial_start = start
+        self._used = self._mv[start:start]
+        if initial_value is not None:
+            self.extend(initial_value)
 
-    def __init__(self, values=None, size:int=DEFAULT_SIZE, start=DEFAULT_START):
-        self._buf = bytearray(size)
-        self._initial_start = self._start = self._end = start
-        if values is not None:  self.create_from(values)
+    def __setitem__(self, idx, value):
+        self._used[idx] = value
 
-    def __iter__(self):
-        """Create an iterator for cycling through all active bytes"""
-        class BufferIter:
-            def __init__(self, parent):
-                self._parent = parent
-                self._next_idx = 0
+    def __getitem__(self, idx):
+        #NOTE: also services iter(), accepts slice(), or int index
+        return self._used[idx]
 
-            def __iter__(self):
-                return self
+    def __len__(self):
+        return len(self._used)
 
-            def __next__(self) -> int:
-                if self._next_idx >= len(self._parent): raise StopIteration
-                v = self._parent[self._next_idx]
-                self._next_idx += 1
-                return v
-
-        return BufferIter(self)
+    def __repr__(self) -> str:
+        return "Buffer(sz=%d, start=%d, end=%d v=%s)" % (len(self._mv), self._start, self._end, self._mv.hex())
 
     def __str__(self) -> str:
-        """Show stats about the buffer"""
-        return "Buffer(sz:%d, start:%d, end:%d)" % (
-            len(self._buf), self._start, self._end)
+        return "Buffer(sz=%d, start=%d, end=%d)" % (len(self._mv), self._start, self._end)
 
-    def __getitem__(self, idx:int): # -> bytes #NOTE int might be better?
-        return self._buf[self._start + idx]
-
-    def __len__(self) -> int:
-        """The current used length, between start and end"""
-        return self._end - self._start
+    def __iter__(self):
+        return iter(self._used)
 
     def get_max(self) -> int:
-        """The maximum size of buffer"""
-        return len(self._buf)
+        """How big could this buffer grow?"""
+        return len(self._mv)
 
     def is_full(self) -> bool:
-        """Is this buffer full, so an extend or prepend will grow()?"""
-        return (self._end - self._start) == len(self._buf)
-
-    def get_slice(self, start:int, length:int) -> bytearray:
-        """Read a slice of the buffer, e.g. to get a SHA256 or filename out"""
-        s = self._start+start
-        return self._buf[s:s+length]
-
-    def read_with(self, user_fn:callable) -> int or None:
-        """Access the internal buffer valid range, using a user provided function"""
-        # This prevents the need to expose the buffer to outside
-        # this will write with the uart in the pico tester
-        nb = user_fn(self._buf[self._start:self._end])
-        #NOTE: this takes a slice of the buffer if start and end are not full range
-        #and that can stress out the garbage collector
-        ##deps.message("read_with user_fn wrote:%s" % str(nb))
-        return nb
-
-    def write_with(self, user_fn:callable) -> int or None:
-        """Use the user function to read into our buffer"""
-        # This prevents exposing our buffer to outsiders
-        # it always reads to the start of the buffer at zero, but that is fine
-        # because this will be for a receive path which will peel off headers
-        # and never need to lgrow()
-        self._start = self._end = 0
-        nb = user_fn(self._buf)
-        if nb is None: return None  # could not read (probably EOF?)
-        self._end = nb
-        return nb
-
-    def create_from(self, values) -> None:
-        """Create a buffer filled with these values"""
-        self.reset()
-        self.extend(values)
-
-    def prepend1(self, value) -> None:
-        self._start -= 1
-        self._buf[self._start] = value
-
-    def prepend(self, values) -> None:
-        """Prepend one or more values to the LHS, e.g. adding a header"""
-        self._start -= len(values)
-        offset = self._start
-        b = self._buf
-        for v in values:  # assumes iterable
-            b[offset] = v  # will fail if not big enough, or if value out of range
-            offset += 1
+        """Is every byte available actually used?"""
+        return len(self._mv) == len(self._used)
 
     def append(self, value:int) -> None:
-        """Same as extend"""
-        self._buf[self._end] = value
+        """Append a single value to RHS"""
+        new_used = self._mv[self._start: self._end+1]  # exception if full
+        length = self._end - self._start
+        new_used[length] = value  #NOTE: not sure why there is a warning here?
         self._end += 1
+        self._used = new_used
 
     def extend(self, values) -> None:
-        """Extend one or more values to the RHS, e.g. adding a footer"""
-        offset = self._end
-        b = self._buf
-        for v in values:  # assumes iterable
-            b[offset] = v  # will fail if not big enough, or if value out of range
-            offset += 1
-        self._end = offset
+        """Extend RHS by bytes-like or iterable of int"""
+        len_old_used = len(self._used)
+        len_values = len(values)
+        # extend the viewed range to accept the new data
+        new_used = self._mv[self._start:self._end+len_values]  # exception if full
+
+        # is it a bytes-like object (supports buffer protocol)
+        try:
+            ##new_used[-len_old_used:] = values
+            new_used[len_old_used:len_old_used+len_values] = values
+        #TODO: CPython and MicroPython both support both exceptions,
+        #so can probably safely list either here.
+        except: #Cpython=TypeError, MicroPython=NotImplementedError
+            # no it isn't, so iterate it instead
+            for i in range(len_values):
+                new_used[len_old_used+i] = values[i]
+        # change last, in case of exception
+        self._end += len_values
+        self._used = new_used
+
+    def prepend1(self, value:int) -> None:
+        """Extend LHS by one value of int"""
+        new_used = self._mv[self._start-1:self._end]  # exception if out of range
+        new_used[0] = value  #NOTE: not sure why there is a warning here
+        self._start -= 1
+        self._used = new_used
+
+    def prepend(self, values) -> None:
+        """Extend LHS by any number of values, bytes-like or iterable of int"""
+        len_values = len(values)
+        # extend the viewed range to accept the new data
+        new_used = self._mv[self._start-len_values:self._end]  # exception if full
+
+        # is it a bytes-like object (supports buffer protocol)
+        try:
+            ##new_used[-len_old_used:] = values
+            new_used[:len_values] = values
+        # TODO: CPython and MicroPython both support both exceptions,
+        # so can probably safely list either here.
+        except:  # TypeError on Cpython, NotImplementedError on MicroPython
+            # no it isn't, so iterate it instead
+            for i in range(len_values):
+                new_used[i] = values[i]
+        # change last, in case of exception
+        self._start -= len_values
+        self._used = new_used
 
     def ltrunc(self, amount:int) -> None:
-        """Remove bytes at LHS, e.g. to remove a header that has been processed"""
+        """Remove a number of items from LHS"""
+        new_used = self._mv[self._start+amount:self._end]  # exception if out of range
         self._start += amount
+        self._used = new_used
 
     def rtrunc(self, amount:int) -> None:
-        """Remove bytes at RHS, e.g. to remove a footer that has been processed"""
+        """Remove a number of items from RHS"""
+        new_used = self._mv[self._start:self._end-amount]  # exception if out of range
         self._end -= amount
+        self._used = new_used
+
+    def read_with(self, user_fn: callable) -> int or None:
+        #NOTE: can now do this as nb = user_fn(buffer[:])
+        ## user_fn = uart.write(bytes-like) -> int
+        return user_fn(self._used)  # from start to end
+
+    def write_with(self, user_fn: callable) -> int or None:
+        #NOTE: This is required, so that the internal end/used can be updated
+        #in a transactionally safe way, that doesn't expose the internal
+        #state variables to the caller.
+        ## user_fn = uart.read(bytes-like) -> int
+        self.reset()  # clear buffer to start
+        nb = user_fn(self._mv[self._start:])  # whole available buffer
+        if nb is None: return None  # could not read (probably EOF?)
+        self._end = self._start + nb
+        self._used = self._mv[self._start:self._end]
+        return nb
 
     def reset(self) -> None:
-        """Reset and recycle the buffer as empty, keeps gc out of the loop"""
         self._start = self._end = self._initial_start
+        self._used = self._mv[self._start:self._end]
+
+    def create_from(self, values) -> None:
+        self.reset()
+        self.extend(values)
 
 
 #===== READERS AND WRITERS =====================================================
@@ -554,82 +561,75 @@ class FileReader:
         if len(data) == 0:  return None  #EOF
         return data
 
-class FileWriter:
+class CachedFileWriter:
+    """Cache data into RAM until it is verified, commit to disk after verification"""
     """Write a random access disk file, streamed, or at any position"""
-    def __init__(self):
+    PREALLOC  = 0 # cached, but pre-alloc all required bytearray()s at start()
+    ON_DEMAND = 1 # cached, but create new bytes() on each call to write()
+
+    def __init__(self, mode):
         self._name = None
+        self._file = None
         self._bufs  = None
         #NOTE: this 3-tuple might make a nice class abstraction
         self._blocksz = None
         self._nblocks = None
         self._lastblock = None
+        self._mode = mode
 
-    def start(self, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
+    def start(self, name:str, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
         """Start a buffer for a file of this size"""
         # The Pico doesn't allow large block sizes bigger than about 1K at a time,
         # so we allocate a chain of blocks that align with the receive block size
         # as that is always quite naturally small.
         assert self._name is None, "start() when already running"
+        self._name = name
 
-        # pre-allocated buffer scheme (but copy process is slow)
-        ##gc.collect()
-        ##self._bufs = [bytearray(blocksz) for _ in range(nblocks)]
-        ##if lastblock != 0: self._bufs.append(bytearray(lastblock))
+        if self._mode == self.PREALLOC:
+            # pre-allocated buffer scheme (but copy process is slow)
+            gc.collect()
+            self._bufs = [bytearray(blocksz) for _ in range(nblocks)]
+            if lastblock != 0: self._bufs.append(bytearray(lastblock))
 
-        # allocate on demand buffer scheme (copy fast, but might get MemoryError later)
-        # allocate empty slots so we can fast index later
-        self._bufs = [None for _ in range(nblocks)]
-        if lastblock != 0: self._bufs.append(None)
+        elif self._mode == self.ON_DEMAND:
+            # allocate on demand buffer scheme (copy fast, but might get MemoryError later)
+            # allocate empty slots so we can fast index later
+            self._bufs = [None for _ in range(nblocks)]
+            if lastblock != 0: self._bufs.append(None)
 
         self._blocksz = blocksz
         self._nblocks = nblocks
         self._lastblock = lastblock
-        # can now use write() whenever required
 
-    #NOTE: this should be a blockno interface really
+    #NOTE: this should be a blockno interface really, as we have blocks in start()
     def write(self, data:Buffer or None, offset:int or None=None) -> None:
-        """Write new data to the file"""
+        """A new data block has arrived, cache or write it to the file"""
+        if data is None:      return  # EOF
+        if len(data) is None: return  #NODATA
+
         if self._bufs is None:
             # this might actually happen in real life, so don't assert
-            deps.message("ignoring data before META_START message, size not yet known")
-        elif data is None:  # EOF
-            pass  # nothing we can do, filename not known.
-        elif len(data) == 0:  #NODATA
-            pass  # nothing we can do, filename not known: self.snapshot()?
-        else:
-            blockno  = int(offset / self._blocksz)  # index into buffer chain
-            residual = offset % self._blocksz
-            if residual != 0:
-                raise ValueError("offset alignment error %d does not align to %d" % (offset, self._blocksz))
+            platdeps.message("warning: ignoring data before META_START message, size not yet known")
+            return
 
-            #PLAN-A pre-allocated buffer scheme (slow copy, but memory guaranteed)
-            #src_buf   = data._buf
-            #src_len   = len(data)
-            #dst_buf = self._bufs[blockno]
-            #dst_len = len(dst_buf)  # size of pre-allocated bytearray (lastblock might be smaller)
+        blockno  = int(offset / self._blocksz)  # index into buffer chain
+        residual = offset % self._blocksz
+        if residual != 0:
+            raise ValueError("offset alignment error %d does not align to %d" % (offset, self._blocksz))
 
-            #if src_len != dst_len:
-            #    raise ValueError("Block size mismatch: incoming:%d store:%d" % (src_len, dst_len))
-            #s = data._start  # remember there might be a header offset
+        if self._mode == self.ON_DEMAND:
+            # fast-copy bytes from Buffer into on-demand bytes, using buffer-protocol
+            self._bufs[blockno] = bytes(data[:])
 
-            #for d in range(dst_len):
-            #    dst_buf[d] = src_buf[s]
-            #    s += 1
-
-            #PLAN-B fast-copy on demand scheme (but might get MemoryError)
-            #NOTE: introduce the new class Buffer(bytearray) pattern instead
-            self._bufs[blockno] = data._buf[data._start:data._end]  # slice takes a copy
-
-    def snapshot(self) -> None:
-        """Save current buffer to somewhere persistent"""
-        # placeholder for future work
-        assert False, "UNIMPLEMENTED snapshot()"
+        elif self._mode == self.PREALLOC:
+            # fast-copy bytes from Buffer into prealloc bytearray, using buffer-protocol
+            self._bufs[blockno][:] = data[:]
 
     def get_sha256(self) -> bytes:
         """Sha256 sum the buf, for integrity checking"""
         assert self._bufs is not None, "get_sha256() with empty bufs"
         def sha256_of_buf(buf) -> bytes:
-            hasher = deps.hashlib_sha256()
+            hasher = platdeps.hashlib_sha256()
             for b in buf:
                 hasher.update(b)  # auto adjusts to each bytearray size
             digest = hasher.digest()
@@ -640,21 +640,78 @@ class FileWriter:
     def _invalidate(self):
         """Invalidate and delete any stored state"""
         self._bufs = None  # the whole buf chain will gc.collect
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._name = None
         gc.collect()
 
-    def commit(self, name:str) -> None:
-        """Commit current buffer to file, and cleanup"""
+    def commit(self) -> None:
+        """Commit any cached data, and cleanup"""
         assert self._bufs is not None, "commit() with empty buffs"
-        f = open(name, "wb")  # exception if fails
+        assert self._name is not None, "commit() with no named file"
+        assert self._file is None, "commit() with already-open file"
+        self._file = open(self._name, "wb")  # exception if fails
         for buf in self._bufs:
-            f.write(buf)
-        f.close()
-        #IDEA: could sha256 again here to make sure write worked ok?
+            self._file.write(buf)
+
         self._invalidate()
 
     def abort(self) -> None:
-        """Abort the current buffer and cleanup"""
+        """Abort the current transfer and cleanup"""
         self._invalidate()
+
+class ImmediateFileWriter:
+    """Write data to disk file as it arrives, verify by re-reading and rename"""
+    TEMP_NAME = "_INPROGRESS.tmp"  #NOTE: generate this name to be unique
+
+    def __init__(self):
+        self._name = None
+        self._file = None
+        #NOTE: this 3-tuple might make a nice class abstraction
+        self._blocksz = None
+        self._nblocks = None
+        self._lastblock = None
+
+    def start(self, name:str, blocksz:int, nblocks:int, lastblock:int) -> None:  # exception if file too big
+        """Start a buffer for a file of this size"""
+        # The Pico doesn't allow large block sizes bigger than about 1K at a time,
+        # so we allocate a chain of blocks that align with the receive block size
+        # as that is always quite naturally small.
+        assert self._name is None, "start() - already started"
+        self._file      = open(self.TEMP_NAME, "wb")  # exception if can't create file
+        self._name      = name
+        self._blocksz   = blocksz
+        self._nblocks   = nblocks
+        self._lastblock = lastblock
+
+    #NOTE: this should be a blockno interface really, as we have blocks in start()
+    def write(self, data:Buffer or None, offset:int or None=None) -> None:
+        """A new data block has arrived, cache or write it to the file"""
+        assert self._file is not None, "write() - file is not open"
+        if data is None:  return # EOF
+        elif len(data) == 0:  return # NODATA
+
+        self._file.seek(offset)
+        data.read_with(self._file.write)
+
+    def get_sha256(self) -> bytes:
+        """Get the sha256 of the temporary file, for integrity check"""
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        return sha256_of_file(self.TEMP_NAME)
+
+    def commit(self) -> None:
+        """Commit the temporary file by renaming it to the final file"""
+        ##try:
+        ##    platdeps.os_unlink(self._name)  # exception if can't delete
+        ##except FileNotFoundError: pass
+        platdeps.os_rename(self.TEMP_NAME, self._name)  # exception if can't rename
+
+    def abort(self) -> None:
+        """Abort the current transfer and cleanup"""
+        platdeps.os_unlink(self.TEMP_NAME)  # exception if can't delete
 
 
 class Link:
@@ -692,7 +749,7 @@ class Link:
                 else:
                     hlist = self._reg_table[selector]
                     if handler_fn in hlist:
-                        deps.message("warning:sel(%s) already registered, ignoring add" % str(selector))
+                        platdeps.message("warning: sel(%s) already registered, ignoring add" % str(selector))
                         return False  # NOT DONE
 
                 hlist.append(handler_fn)
@@ -701,7 +758,7 @@ class Link:
         else:
             #DELETE
             if not selector in self._reg_table:
-                deps.message("warning:sel(%s) not registered, ignoring delete" % str(selector))
+                platdeps.message("warning: sel(%s) not registered, ignoring delete" % str(selector))
                 return False  # NOT DONE
 
             hlist = self._reg_table[selector]
@@ -716,7 +773,7 @@ class Link:
                 except ValueError:
                     #NOTE: this gives a warning only on Pico (<bound_method>)
                     #I think function hashing works differently on Pico
-                    ##deps.message("warning:sel(%s) not registered for(%s), ignoring delete" % (str(selector), str(handler_fn)))
+                    ##platdeps.message("warning: sel(%s) not registered for(%s), ignoring delete" % (str(selector), str(handler_fn)))
                     return False  # NOT DONE
 
             else: # None, delete ALL registrations for this channel
@@ -729,7 +786,7 @@ class Link:
         """Dispatch args to all registered handlers"""
         hlist = self._reg_table[selector]  # KeyError if not found
         for h_fn in hlist:
-            ##deps.message("dispatch %s %s to fn %s" % (str(data), str(info), str(h_fn)))
+            ##platdeps.message("dispatch %s %s to fn %s" % (str(data), str(info), str(h_fn)))
             h_fn(data, info)
 
 class PStats:
@@ -843,8 +900,6 @@ class Packetiser(Link):
     _STATE_ESCAPED    = 5
     _STATE_GOT_PACKET = 6
 
-    @perf.tbc
-    #@perf.measure("Packetiser")
     def recvinto(self, user_buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
         _ = info  # argsused
         # don't clear user_buf here, it might have partial packet from prev call
@@ -856,25 +911,25 @@ class Packetiser(Link):
                 packetiser_stats.buf_fills += 1
                 ##DEPRECATE not needed if len==0 self._rx_buf.reset()
                 nb = self._link.recvinto(self._rx_buf, info, wait=wait)
-                ##deps.message("fillbuf:%s" % nb)
+                ##platdeps.message("fillbuf:%s" % nb)
 
                 if nb is None:  # EOF on receive link
                     # EOF means we didn't see an ending sync, so trash partial buf
                     #NOTE: need to count this as an 'interesting event'
-                    deps.message("pkt:EOF(None)")
+                    ##platdeps.message("pkt:EOF(None)")
                     user_buf.reset()
                     return None  # EOF
                 # might validly be partially processed data in user_buf
                 # so user must pass that back in again next time to 'finish it off'
                 if nb == 0:
                     assert not wait, "got nb0 when wait=True"
-                    deps.message("pkt:NODATA(0)")
+                    ##platdeps.message("pkt:NODATA(0)")
                     return 0  # NODATA (yet), but might be partial in rx_buf
 
             # process bytes in _rx_buf
             while len(self._rx_buf) > 0:
                 this_byte = self._rx_buf[0]  # peek next
-                ##deps.message("state:%s this_byte:%d %c" % (self._rx_state, this_byte, chr(this_byte)))
+                ##platdeps.message("state:%s this_byte:%d %c" % (self._rx_state, this_byte, chr(this_byte)))
 
                 consumed = False
                 if self._rx_state == self._STATE_SYNCING:
@@ -961,7 +1016,7 @@ class Packetiser(Link):
                     if nbytes+1 != nb:
                         packetiser_stats.bad_plens += 1
                         #Don't use too much, it slows code down
-                        deps.message("plen:%d vs [%d]" % (nbytes+1, nb))
+                        platdeps.message("plen:%d vs [%d]" % (nbytes+1, nb))
                     return nb
 
                 ##else:
@@ -1028,7 +1083,7 @@ class HexStreamReader(StreamReader):
             return None # EOF
         if len(line) < max_len:  self._is_eof = True
 
-        bin_data = hex_to_bin(deps.bytes_to_str(line))
+        bin_data = hex_to_bin(platdeps.decode_to_str(line))
         return bin_data
 
 class HexStreamWriter(StreamWriter):
@@ -1115,27 +1170,30 @@ class LinkSender(Link):
                 self.add_header_and_send(data, LinkMessage.DCH | channel, blockno)
             else:
                 buf = Buffer(self.END_MSG)
-                ##deps.message("SENDING EOF PACKET")
+                ##platdeps.message("SENDING EOF PACKET")
                 self.add_header_and_send(buf, LinkMessage.CCH | channel, blockno)
                 ##assert False, "SENT EOF PACKET"
                 del buf
 
+    @perf.measure
     def add_header_and_send(self, data:Buffer, channel:int=LinkMessage.LINKCH, blockno:int=0) -> None:
         """Wrap and send any data to any channel"""
         # length byte not included in length byte
         lenbyte = len(data) + (self.PROTOCOL_OVERHEAD-1)
+        if crc16 is None: lenbyte -= 2  # no CRC
         if lenbyte > 255:
-            deps.message("error:data too long, got len:%d" % lenbyte)
+            platdeps.message("error: data too long, got len:%d" % lenbyte)
             return
 
         # HEADER len, seqno, channel, blockno(u16)
         data.prepend((lenbyte, self._next_seqno, channel, (blockno & 0xFF00)>>8, (blockno & 0xFF) ))
 
-        # CRC
-        crc = crc16(data)
-
-        # network byte order, big-endian
-        data.extend((high(crc), low(crc)))
+        # CRC (optional)
+        if crc16 is not None:
+            #TODO: use the memoryview/slice rather than pass length
+            crc = crc16(data[:], len(data))
+            # network byte order, big-endian
+            data.extend((high(crc), low(crc)))
 
         # advance seqno modulo 256; do last, in case of exception earlier
         self._next_seqno = (self._next_seqno + 1) & 0xFF
@@ -1225,6 +1283,7 @@ class LinkReceiver(Link):
         buf.rtrunc(FBYTES)
         return len(buf)
 
+    @perf.measure
     def get_next_packet_into(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
         """Receive and validate a link layer message (but don't fully decode)"""
         nb = self._link.recvinto(buf, info, wait=wait)
@@ -1247,7 +1306,7 @@ class LinkReceiver(Link):
 
         if nbytes+1 > len(buf):
             link_stats._long += 1
-            ##deps.message("length mismatch, lbyte:%d buflen:%d" % (nbytes, len(buf)))
+            ##platdeps.message("length mismatch, lbyte:%d buflen:%d" % (nbytes, len(buf)))
             buf.reset()  # junk any data that was captured
             return 0  #NODATA
 
@@ -1261,16 +1320,18 @@ class LinkReceiver(Link):
             info[LinkMessage.CHANNEL] = chn
             info["blockno"] = blockno
 
-        crc = crc16(buf, length=len(buf)-2)  # all except CRC16 bytes at end
+        # CRC (optional)
+        if crc16 is not None:
+            #TODO: use the memoryview/slice rather than pass length
+            crc = crc16(buf[:], len(buf)-2)  # all except CRC16 bytes at end
+            # read in CRC from end (remember nbytes is one less than packet size)
+            rx_crc = (buf[nbytes-1] <<8) | buf[nbytes]
 
-        # read in CRC from end (remember nbytes is one less than packet size)
-        rx_crc = (buf[nbytes-1] <<8) | buf[nbytes]
-
-        # validate CRC first, so we know packet isn't damaged
-        if rx_crc != crc:
-            link_stats._crc += 1
-            buf.reset()  # junk any data that was captured
-            return 0  #NODATA
+            # validate CRC first, so we know packet isn't damaged
+            if rx_crc != crc:
+                link_stats._crc += 1
+                buf.reset()  # junk any data that was captured
+                return 0  #NODATA
 
         # validate seqno
         if seqno != self._next_seqno:
@@ -1342,7 +1403,7 @@ class LinkManager(Link):
 class TransferStats:
     """Keep simple statistics about data transfer"""
     def __init__(self):
-        self._start_time = deps.time_time()
+        self._start_time = platdeps.time_time()
         self.time_used  = 0
         self.nblocks    = 0
         self.nbytes     = 0
@@ -1352,7 +1413,7 @@ class TransferStats:
     def update(self, nbytes:int) -> None:
         self.nblocks += 1
         self.nbytes += nbytes
-        self.time_used = deps.time_time() - self._start_time
+        self.time_used = platdeps.time_time() - self._start_time
         if self.time_used > 0:
             self.bps = self.nbytes / self.time_used
             self.pps = self.nblocks / self.time_used
@@ -1381,7 +1442,7 @@ class Sender:
         self._stats = TransferStats()
         if progress_fn: progress_fn()  # starting #IDEA: move to send() based on state
         self._is_running = True
-        self._last_stats = deps.time_time()
+        self._last_stats = platdeps.time_time()
 
     def tick(self) -> bool:
         """Pump regular send processing"""
@@ -1394,6 +1455,10 @@ class Sender:
     def run(self) -> None:
         """Run to completion"""
         while self.tick(): pass
+
+    def get_stats(self) -> str:
+        """Get the transfer stats"""
+        return str(self._stats)
 
     #IDEA: could this be delegated to the block manager as an algo?
     def choose_next_block(self) -> tuple: # of (blockno:int, repno:int)
@@ -1457,7 +1522,7 @@ class Sender:
         self._stats.update(len_data)
         if self._progress_fn:
             # Throttled update rate
-            now = deps.time_time()
+            now = platdeps.time_time()
             if now-self._last_stats >= 1:
                 self.print_stats()
                 self._last_stats = now
@@ -1501,7 +1566,7 @@ class Receiver:
         self._crc_errs = None # don't display if there are none
         self._blockmap = None  # block map size not yet known
         if progress_fn: progress_fn()  # starting #IDEA: move to transfer function based on state
-        self._last_stats = deps.time_time()
+        self._last_stats = platdeps.time_time()
         self._state = self._STATE_STARTING
         self._is_running = True
 
@@ -1589,7 +1654,7 @@ class Receiver:
         self._stats.update(len(data))
         if self._progress_fn:
             # throttle the update rate
-            now = deps.time_time()
+            now = platdeps.time_time()
             if now - self._last_stats >= 1:
                 self.print_stats()
                 self._last_stats = now
@@ -1599,13 +1664,17 @@ class Receiver:
         """Handle any data that arrives after link is closed"""
         ##assert isinstance(data, Buffer), "got:%s" % str(type(data))
         _ = data  # argused
-        deps.message("warning:new data arrived after writer closed")
+        platdeps.message("warning: new data arrived after writer closed")
 
     def get_percent(self) -> int or None:
         if self._blockmap is not None:
             return self._blockmap.get_percent()
         else:
             return None
+
+    def get_stats(self) -> str:
+        """Get a string representation of transfer stats for this task"""
+        return str(self._stats)
 
     def print_stats(self) -> None:
         """If progress enabled, print stats to it"""
@@ -1619,7 +1688,7 @@ class Receiver:
         #trigger end effects in the tick later.
 
     def finished_err(self, msg:str or None=None) -> None:
-        if msg is not None: deps.message("finished_err:%s" % msg)
+        if msg is not None: platdeps.message("finished_err:%s" % msg)
         self._state = self._STATE_FINISHED_ERR
 
     def finished_ok(self, msg:str or None=None) -> None:
@@ -1628,10 +1697,8 @@ class Receiver:
             self._progress_fn()  # clear current line
             self._progress_fn("\n")  # start a new line
             self._progress_fn(str(self._stats))
-        if msg is not None: deps.message("finished_ok:%s" % msg)
+        if msg is not None: platdeps.message("finished_ok:%s" % msg)
         self._state = self._STATE_FINISHED_OK
-        #IDEA: do this in the app
-        deps.message("final rx stats:%s" % str(self._stats))
 
 #===== FILE TRANSFER AGENT =====================================================
 
@@ -1640,9 +1707,9 @@ TYPENO_META = 0x01  # CCH typeno for msg_start
 
 class FileSender(Sender):
     """Send something we know to be a disk file"""
-    START_META   = 1     #8   # first 8 blocks are metadata message
-    META_EVERY_N = 2000  #20  # send a new metadata message every N blocks
-    NUM_REPEATS  = 0     #3   # number of times to re-send the same block (0 means just send once)
+    START_META   = 8   # first 8 blocks are metadata message
+    META_EVERY_N = 50  # send a new metadata message every N blocks
+    NUM_REPEATS  = 3   # number of times to re-send the same block (0 means just send once)
     # If you want to send sensor data, use a Sender() directly
 
     def __init__(self, filename:str, link_manager:LinkManager, progress_fn:callable or None=None,
@@ -1661,7 +1728,7 @@ class FileSender(Sender):
         self._filesize = sz
         self._filesha256  = sha256
         self._meta_msg = self.make_meta_msg()
-        deps.message("tx:%s\nsize:%d\nsha256:%s\n" % (filename, sz, hashstr(sha256)))
+        ##platdeps.message("tx:%s\nsize:%d\nsha256:%s\n" % (filename, sz, hashstr(sha256)))
 
         self._tickno     = 0
 
@@ -1669,7 +1736,7 @@ class FileSender(Sender):
         """Calculate and build a metadata message for this file"""
         ##assert self._blocksz <= 255, "make_meta_msg: block size too big, max:255, got:%d" % self._blocksz
 
-        just_filename = deps.os_path_basename(self._filename)
+        just_filename = platdeps.os_path_basename(self._filename)
         msg = bytearray()
         msg.append(TYPENO_META)
 
@@ -1696,7 +1763,7 @@ class FileSender(Sender):
 
     def send_meta(self) -> None:
         """Send the cached meta message for this file"""
-        ##deps.message("sending META")
+        ##platdeps.message("sending META")
 
         buf = Buffer()  #IDEA: keep a buffer handy for this, or use our self._buffer
         buf.extend(self._meta_msg)
@@ -1720,7 +1787,11 @@ class FileReceiver(Receiver):
     """Receive something we know to be a disk file"""
     #NOTE: If you want to receive sensor data, use a Receiver() directly
 
-    def __init__(self, link_manager:LinkManager, filename:str or None, progress_fn:callable or None=None):
+    def __init__(self, link_manager:LinkManager, filename:str or None, progress_fn:callable or None=None,
+                 cached:bool=False):
+        #NOTE: cached for Raspberry Pi Pico local filesystem
+        #NOTE: uncached for sdcard or host file system
+
         # No metadata received yet
         self._local_filename = filename # might be None
         self._nblocks        = None
@@ -1732,7 +1803,16 @@ class FileReceiver(Receiver):
         self._linkreceiver   = link_manager.get_receiver()
         self._cch            = LinkMessage.CCH | LinkMessage.LINKCH
         self._dch            = LinkMessage.DCH | LinkMessage.LINKCH
-        self._writer         = FileWriter()
+        if cached:
+            # Raspberry Pi Pico filesystem writes insert a 32ms interrupts-off condition
+            # which trashes the receive pipeline, so use one of the cached modes
+            platdeps.message("using: CachedFileWriter(PREALLOC)")
+            self._writer = CachedFileWriter(CachedFileWriter.PREALLOC)  # PREALLOC or ON_DEMAND
+        else:
+            # host or sdcard writes can be written as we go along
+            platdeps.message("using: ImmediateFileWriter")
+            self._writer = ImmediateFileWriter()
+
         self._linkreceiver.register(self._cch, self.received_ctrl)  # for META_MSG, END_MSG
         Receiver.__init__(self, LinkReceiverFor(self._linkreceiver, self._dch), self._writer.write, progress_fn)
 
@@ -1751,22 +1831,22 @@ class FileReceiver(Receiver):
     def _decode_meta_msg(self, data:Buffer) -> bool:
         """A META message has just been received"""
         ##assert isinstance(data, Buffer), "expected Buffer, got:%s" % str(type(data))
-        ##deps.message("FileReceiver:_meta_msg %s" % hexstr(data))
+        ##platdeps.message("FileReceiver:_meta_msg %s" % hexstr(data))
         if len(data) < 5+32:  # block header + meta record
-            deps.message("warning:short START message, ignoring: %s" % hexstr(data))
+            platdeps.message("warning: short START message, ignoring: %s" % hexstr(data))
             return False  # SHORT START
 
         #check what byte 0 is? It's the type byte, previously selected?
         nblocks      = (data[1]<<8) | data[2]
         blocksz      = data[3]
         lastblock    = data[4]
-        sha256       = bytes(data.get_slice(5, 32))
-        filename_raw = data.get_slice(5+32, len(data)-(32+5))
-        filename     = deps.decode_to_str(filename_raw)
-        filename     = deps.os_path_basename(filename)  # no directories allowed
+        sha256       = bytes(data[5:5+32])
+        filename_raw = bytes(data[5+32:-1])  # skip the ZTERM
+        filename     = platdeps.decode_to_str(filename_raw)
+        filename     = platdeps.os_path_basename(filename)  # no directories allowed
 
         if self._nblocks is None:
-            ##deps.message("capturing metadata for file")
+            ##platdeps.message("capturing metadata for file")
             # first START message with metadata in it
             # capture the metadata
             self._nblocks          = nblocks
@@ -1778,8 +1858,8 @@ class FileReceiver(Receiver):
             # now able to monitor the progress of block transfer
             self.set_block_info(blocksz, nblocks, lastblock)
             ##filesize = (nblocks * blocksz) + lastblock
-            self._writer.start(blocksz, nblocks, lastblock)  #NOTE: this 3-tuple might make a nice class
-            deps.message("rx:start: nb:%d bsz:%d lb:%d sha256:%s nm:%s" % (nblocks, blocksz, lastblock, hashstr(sha256), filename))
+            self._writer.start(self._local_filename, blocksz, nblocks, lastblock)  #NOTE: this 3-tuple might make a nice class
+            ##platdeps.message("rx:start: nb:%d bsz:%d lb:%d sha256:%s nm:%s" % (nblocks, blocksz, lastblock, hashstr(sha256), filename))
 
         else:
             # duplicate metadata, check it all matches
@@ -1788,7 +1868,7 @@ class FileReceiver(Receiver):
                 lastblock != self._lastblock or \
                 sha256 != self._sha256 or \
                 filename != self._remote_filename:
-                deps.message("warning:duplicate metadata received, but DIFFERENT!")
+                platdeps.message("warning: duplicate metadata received, but DIFFERENT!")
                 return False  # NOT HANDLED  IDEA: might stop transfer?
 
         return True  # HANDLED
@@ -1796,7 +1876,7 @@ class FileReceiver(Receiver):
     def _decode_end_msg(self, data:Buffer) -> bool:
         """An END message has just been received"""
         ##assert isinstance(data, Buffer), "got:%s" % str(type(data))
-        ##deps.message("FileReceiver:end_msg %s" % hexstr(data))
+        ##platdeps.message("FileReceiver:end_msg %s" % hexstr(data))
         _ = data  # argused
 
         if  self._nblocks         is not None and \
@@ -1827,7 +1907,7 @@ class FileReceiver(Receiver):
                 ##self._writer = None  # don't do this, it will make re-runs fail
                 return  # FAILED
         else:
-            deps.message("warning:no blocks metadata received, can't check sha/size integrity in end_transfer")
+            platdeps.message("warning: no blocks metadata received, can't check sha/size integrity in end_transfer")
 
         # else PASSED or DONT KNOW
         self._nblocks = None
@@ -1835,8 +1915,7 @@ class FileReceiver(Receiver):
         self._lastblock = None
         self._sha256 = None
 
-        self._writer.commit(self._local_filename)
-        ##self._writer = None  # don't do this, it will make re-runs fail
+        self._writer.commit()
 
         # rename last, in case of file system error
         self.finished_ok("files identical:%s" % self._local_filename)
@@ -1847,15 +1926,15 @@ class FileReceiver(Receiver):
         expected_sha256 = self._sha256
         # validate sha256 against received data
         actual_sha256 = self._writer.get_sha256()
-        ##deps.message("rx:%s size:%d sha256:%s\n" % (self._remote_filename, actual_sz, hexstr(actual_sha256)))
+        ##platdeps.message("rx:%s size:%d sha256:%s\n" % (self._remote_filename, actual_sz, hexstr(actual_sha256)))
 
         # check if the received file is intact or not
         if expected_sha256 != actual_sha256:
             # FAILED
-            deps.message("error:file transfer damaged")
+            platdeps.message("error:file transfer damaged")
             if expected_sha256 != actual_sha256:
-                deps.message("  sender   sha256:%s" % hexstr(expected_sha256))
-                deps.message("  receiver sha256:%s" % hexstr(actual_sha256))
+                platdeps.message("  sender   sha256:%s" % hexstr(expected_sha256))
+                platdeps.message("  receiver sha256:%s" % hexstr(actual_sha256))
             return False  # INTEGRITY CHECK FAILED
         return True  # INTEGRITY CHECK PASSED
 
@@ -1869,7 +1948,7 @@ class InMemoryRadio:
         self._waiting = None
 
     def send(self, data:Buffer or None) -> bool:
-        if self._waiting is not None: deps.message("warning: InMemoryRadio.send BUSY")
+        if self._waiting is not None: platdeps.message("warning: InMemoryRadio.send BUSY")
         # just keep going, to see if we can recover
 
         # copy the bytes over, because the buffer will be reset by the sender
@@ -1924,4 +2003,6 @@ class StdStreamRadio(Link):
         # direct dispatch (fast)
         self.send     = self._packetiser.send
         self.recvinto = self._packetiser.recvinto
+
+
 # END: dttk.py

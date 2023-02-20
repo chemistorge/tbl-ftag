@@ -7,9 +7,9 @@ import unittest
 import ftag  # does an auto-dependency check for host
 import dttk
 
-#NOTE: this is also in HostDeps if we need it
-TESTDATA = "./"
 
+def newbuf(*args):
+    return dttk.Buffer(*args)
 
 #----- BYTESTREAM GENERATOR ----------------------------------------------------
 class ByteStreamGenerator(dttk.Link):
@@ -36,14 +36,15 @@ class ByteStreamGenerator(dttk.Link):
         return use
 
 class TestGenerator(unittest.TestCase):
+
     def test_generator(self):
         gen = ByteStreamGenerator(b'hello')
-        b = dttk.Buffer()
+        b = newbuf()
 
         # first poll gets data
         nb = gen.recvinto(b)
         self.assertEqual(5, nb)
-        self.assertEqual(b'hello', b.get_slice(0, len(b)))
+        self.assertEqual(b'hello', bytes(b[:]))
 
         # poll again and get NODATA (or None for EOF)
         b.reset()
@@ -51,52 +52,75 @@ class TestGenerator(unittest.TestCase):
         self.assertEqual(None, nb)
 
 #----- TEST BUFFER -------------------------------------------------------------
-#NOTE: test get_max()
-#NOTE: test is_full()
-
 class TestBuffer(unittest.TestCase):
+
     def expect_exception(self):
         self.fail("did not get expected exception")
 
-    #----- INITIAL HAPPY CASE TESTS
+    ##def __init__(self, values=None, size: int = DEFAULT_SIZE, start=DEFAULT_START):
     def test_create(self):
         """create default buffer"""
-        buf = dttk.Buffer()
-        EXPECTED = "Buffer(sz:128, start:10, end:10)"
+        buf = newbuf()
+        EXPECTED = "Buffer(sz=128, start=10, end=10)"
         actual = str(buf)
         self.assertEqual(EXPECTED, actual)
 
-    def test_extend(self):
-        """append some items and get them back"""
-        buf = dttk.Buffer()
-        # int
-        buf.append(1)
-        buf.append(2)
-        # bytes
-        buf.extend(b'ABC')
-        # bytearray
-        buf.extend(bytearray([3,4,5]))
+    ##def __iter__(self):
+    def test_iter(self):
+        """iterate items in buffer"""
+        buf = newbuf()
+        buf.extend(b'12345678')
+        res = []
+        for b in buf:
+            res.append(chr(b))
+        EXPECTED = ['1', '2', '3', '4', '5', '6', '7', '8']
+        self.assertEqual(EXPECTED, res)
 
-        EXPECTED = b'\x01\x02ABC\x03\x04\x05'
-        actual = buf.get_slice(0, len(buf))
+    ##def __str__(self) -> str:
+    def test_str(self):
+        buf = newbuf(b'hello world')
+        EXPECTED = "Buffer(sz=128, start=10, end=21)"
+        actual = str(buf)
         self.assertEqual(EXPECTED, actual)
 
-    def test_prepend(self):
-        """prepend some items and get them back"""
-        buf = dttk.Buffer()
-        # int
-        buf.prepend1(1)
-        # bytes
-        buf.prepend(b'\x02\x03\x04')
-        # bytearray
-        buf.prepend(bytearray(b'ABC'))
-        EXPECTED = b'ABC\x02\x03\x04\x01'
-        actual = buf.get_slice(0, len(buf))
+    ##def __getitem__(self, idx: int):  # -> bytes
+    def test_getitem(self):
+        buf = newbuf(b'hello')
+        EXPECTED = 101
+        actual = buf[1]
         self.assertEqual(EXPECTED, actual)
 
+    ##def __getitem__(self, idx: int):  # -> bytes
+    def test_non_int_index_ERR(self):
+        """non integer index"""
+        buf = newbuf()
+        # getitem
+        try:
+            i = buf["a"]
+            self.expect_exception()
+        except TypeError: pass
+
+    ##def __getitem__(self, idx: int):  # -> bytes
+    def test_index_range_ERR(self):
+        """out of range index"""
+        buf = newbuf(b'1234')
+        # getitem
+        try:
+            i = buf[200]
+            self.expect_exception()
+        except IndexError: pass
+
+    ##def __getitem__(self, idx: int):  # -> bytes
+    def test_slice(self):
+        buf = newbuf(b'hello world goodbye')
+        EXPECTED = bytearray(b'world')
+        actual = bytearray(buf[6:6+5])
+        self.assertEqual(EXPECTED, actual)
+
+    ##def __len__(self) -> int:
     def test_len(self):
         """get the length of a soft growing buffer"""
-        buf = dttk.Buffer()
+        buf = newbuf()
         actual = []
         actual.append(len(buf))
         buf.append(1)
@@ -106,276 +130,141 @@ class TestBuffer(unittest.TestCase):
         EXPECTED = [0, 1, 2]
         self.assertEqual(EXPECTED, actual)
 
+    ##def get_max(self) -> int:
+    def test_get_max(self):
+        buf = newbuf()
+        EXPECTED = buf.DEFAULT_SIZE
+        actual = buf.get_max()
+        self.assertEqual(EXPECTED, actual)
+
+    ##def is_full(self) -> bool:
+    def test_is_full(self):
+        buf = newbuf()
+        for i in range(buf.DEFAULT_SIZE - buf.DEFAULT_START):
+            buf.append(i)
+        self.assertEqual(False, buf.is_full())
+
+        for i in range(buf.DEFAULT_START-1):
+            buf.prepend1(i)
+        self.assertEqual(False, buf.is_full())
+
+        buf.prepend1(255)
+        self.assertEqual(True, buf.is_full())
+
+
+    ##def read_with(self, user_fn: callable) -> int or None:
+    ##nb = user_fn(self._buf[self._start:self._end])
+    def test_read_with(self):
+        EXPECTED = b'12345678'
+        buf = newbuf(EXPECTED)
+        actual = bytearray()
+        def uart_write(buffer) -> int:
+            actual[:] = buffer[:]
+            return len(buffer)
+
+        nb = buf.read_with(uart_write)
+        self.assertEqual(len(EXPECTED), nb)
+        self.assertEqual(EXPECTED, actual)
+
+    ##def write_with(self, user_fn: callable) -> int or None:
+    ##def write_with(self, user_fn: callable) -> int or None:
+    def test_write_with(self):
+        EXPECTED = b'12345677'
+        buf = newbuf()
+
+        def uart_readinto(buffer) -> int:
+            buffer[:len(EXPECTED)] = EXPECTED
+            return len(EXPECTED)
+
+        nb = buf.write_with(uart_readinto)
+        self.assertEqual(len(EXPECTED), nb)
+        actual = buf[:nb]
+        self.assertEqual(EXPECTED, actual)
+
+    ##def create_from(self, values) -> None:
+    def test_create_from(self):
+        """create from existing"""
+        # bytes
+        EXPECTED = b'ABCD'
+        buf = newbuf(EXPECTED)
+        actual = buf[:]
+        self.assertEqual(EXPECTED, actual)
+
+        # bytearray
+        EXPECTED = b'1234'
+        buf = newbuf(bytearray(EXPECTED))
+        actual = buf[:]
+        self.assertEqual(EXPECTED, actual)
+
+    ##def prepend1(self, value) -> None:
+    ##def prepend(self, values) -> None:
+    def test_prepend(self):
+        """prepend some items and get them back"""
+        buf = newbuf()
+        # int
+        buf.prepend1(1)
+        # bytes
+        buf.prepend(b'\x02\x03\x04')
+        # bytearray
+        buf.prepend(bytearray(b'ABC'))
+        EXPECTED = b'ABC\x02\x03\x04\x01'
+        actual = buf[:]
+        self.assertEqual(EXPECTED, actual)
+
+    ##def append(self, value: int) -> None:
+    ##def extend(self, values) -> None:
+    def test_extend(self):
+        """append some items and get them back"""
+        buf = newbuf()
+        # int
+        buf.append(1)
+        buf.append(2)
+        # bytes
+        buf.extend(b'ABC')
+        # bytearray
+        buf.extend(bytearray([3,4,5]))
+
+        EXPECTED = b'\x01\x02ABC\x03\x04\x05'
+        actual = buf[:]
+        self.assertEqual(EXPECTED, actual)
+
+    ##def ltrunc(self, amount: int) -> None:
     def test_ltrunc(self):
         """ltrunc to remove headers, check length changes"""
-        buf = dttk.Buffer()
+        buf = newbuf()
         buf.extend(b'ABCD1234')
         buf.ltrunc(4)
         EXPECTED = b'1234'
-        actual = buf.get_slice(0, len(buf))
+        actual = buf[:]
         self.assertEqual(EXPECTED, actual)
         self.assertEqual(4, len(buf))
 
+    ##def rtrunc(self, amount: int) -> None:
     def test_rtrunc(self):
         """rtrunc to remove footers, check length changes"""
-        buf = dttk.Buffer()
+        buf = newbuf()
         buf.extend(b'ABCD1234')
         buf.rtrunc(4)
         EXPECTED = b'ABCD'
-        actual = buf.get_slice(0, len(buf))
+        actual = buf[:]
         self.assertEqual(EXPECTED, actual)
         self.assertEqual(4, len(buf))
 
-    def test_iter(self):
-        """iterate items in buffer"""
-        buf = dttk.Buffer()
-        buf.extend(b'12345678')
-        res = []
-        for b in buf:
-            res.append(chr(b))
-        EXPECTED = ['1', '2', '3', '4', '5', '6', '7', '8']
-        self.assertEqual(EXPECTED, res)
-
-    #DEPRECATED: lock() unlock()
-    # def test_lock_unlock(self):
-    #     """lock and unlock"""
-    #     actual = []
-    #     buf = dttk.Buffer()
-    #     buf.lock()
-    #     buf.lock()
-    #     actual.append(str(buf))
-    #
-    #     buf.unlock()
-    #     buf.unlock()
-    #     actual.append(str(buf))
-    #
-    #     buf.lock("secret")
-    #     buf.lock("secret")
-    #     actual.append(str(buf))
-    #
-    #     buf.unlock("secret")
-    #     buf.unlock("secret")
-    #     actual.append(str(buf))
-    #     # expect no exceptions
-    #
-    #     EXPECTED = [
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:None)',
-    #         'Buffer(sz:128, start:10, end:10, locked:False, pw:None)',
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:secret)',
-    #         'Buffer(sz:128, start:10, end:10, locked:False, pw:None)'
-    #     ]
-    #     self.assertEqual(EXPECTED, actual)
-
+    ##def reset(self) -> None:
     def test_reset(self):
         """reset and check len"""
         actual = []
-        buf = dttk.Buffer()
+        buf = newbuf()
         buf.extend(b'12345678')
         actual.append(str(buf))
         buf.reset()
         actual.append(str(buf))
 
         EXPECTED = [
-            'Buffer(sz:128, start:10, end:18)',
-            'Buffer(sz:128, start:10, end:10)'
+            'Buffer(sz=128, start=10, end=18)',
+            'Buffer(sz=128, start=10, end=10)'
         ]
         self.assertEqual(EXPECTED, actual)
-
-    #----- MORE CHALLENGING HAPPY CASE TESTS
-    def test_create_from(self):
-        """create from existing"""
-        # bytes
-        EXPECTED = b'ABCD'
-        buf = dttk.Buffer(b'ABCD')
-        actual = buf.get_slice(0, len(buf))
-        self.assertEqual(EXPECTED, actual)
-
-        # bytearray
-        EXPECTED = b'1234'
-        buf = dttk.Buffer(bytearray(b'1234'))
-        actual = buf.get_slice(0, len(buf))
-        self.assertEqual(EXPECTED, actual)
-
-    #DEPRECATED: rgrow()
-    # def test_prepend_rshift(self):
-    #     """prepend and exceed the initial start, forces an rshift"""
-    #     buf = dttk.Buffer(b'ABCD')
-    #     prefix = bytes('1234' + ('*' * dttk.Buffer.DEFAULT_START), encoding='UTF-8')
-    #     buf.prepend(prefix)
-    #     EXPECTED = b'1234**********ABCD'
-    #     actual = buf.get_slice(0, len(buf))
-    #     self.assertEqual(EXPECTED, actual)
-
-    #DEPRECATED rgrow()
-    # def test_append_rgrow(self):
-    #     """append and exceed the buffer size to forces an rgrow"""
-    #     buf = dttk.Buffer(initial_size=4)
-    #     res = []
-    #     res.append(str(buf))
-    #
-    #     buf.extend(b'1234') # now full
-    #     res.append(str(buf))
-    #
-    #     buf.extend(b'ABCD')
-    #     res.append(str(buf))
-    #     res.append(str(buf.get_slice(0, len(buf))()))
-    #
-    #     EXPECTED = [
-    #         'Buffer(sz:4, start:0, end:0, locked:False, pw:None)',
-    #         'Buffer(sz:4, start:0, end:4, locked:False, pw:None)',
-    #         'Buffer(sz:8, start:0, end:8, locked:False, pw:None)',
-    #         "b'1234ABCD'"
-    #     ]
-    #     self.assertEqual(EXPECTED, res)
-
-    #DEPRECATED lock()
-    # def test_double_lock(self):
-    #     """double lock ok as long as no/same password"""
-    #     res = []
-    #     buf = dttk.Buffer()
-    #     buf.lock()
-    #     buf.lock()
-    #     res.append(str(buf))
-    #
-    #     buf = dttk.Buffer()
-    #     buf.lock("fred")
-    #     buf.lock("fred")
-    #     res.append(str(buf))
-    #
-    #     EXPECTED = [
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:None)',
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:fred)'
-    #     ]
-    #     self.assertEqual(EXPECTED, res)
-
-    #DEPRECATED: unlock()
-    # def test_double_unlock(self):
-    #     """double unlock ok as long as password matches on first unlock"""
-    #     res = []
-    #     buf = dttk.Buffer()
-    #     buf.lock()
-    #     res.append(str(buf))
-    #     buf.unlock()
-    #     buf.unlock()
-    #     res.append(str(buf))
-    #
-    #     buf = dttk.Buffer()
-    #     buf.lock("fred")
-    #     res.append(str(buf))
-    #     buf.unlock("fred")
-    #     buf.unlock("fred")
-    #     res.append(str(buf))
-    #
-    #     EXPECTED = [
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:None)',
-    #         'Buffer(sz:128, start:10, end:10, locked:False, pw:None)',
-    #         'Buffer(sz:128, start:10, end:10, locked:True, pw:fred)',
-    #         'Buffer(sz:128, start:10, end:10, locked:False, pw:None)'
-    #     ]
-    #     self.assertEqual(EXPECTED, res)
-
-
-    #----- ERROR CASE TESTS
-    def test_non_int_index_ERR(self):
-        """non integer index"""
-        buf = dttk.Buffer()
-        # getitem
-        try:
-            i = buf["a"]
-            self.expect_exception()
-        except TypeError: pass
-
-        #DEPRECATED: setitem()
-        # # setitem
-        # try:
-        #     buf["a"] = 1
-        #     self.expect_exception()
-        # except ValueError: pass
-
-    def test_index_range_ERR(self):
-        """out of range index"""
-        buf = dttk.Buffer(b'1234')
-        # getitem
-        try:
-            i = buf[200]
-            self.expect_exception()
-        except IndexError: pass
-
-        #DEPRECATED: setitem()
-        # # setitem
-        # try:
-        #     buf[4] = 1
-        #     self.expect_exception()
-        # except IndexError: pass
-
-    #DEPRECATED: lock()
-    # def test_lock_locked_wrong_password_ERR(self):
-    #     """lock an already locked buffer with diff password"""
-    #     buf = dttk.Buffer()
-    #     buf.lock("fred")
-    #     try:
-    #         buf.lock("bert")
-    #         self.expect_exception()
-    #     except dttk.Buffer.LockedError: pass
-
-    #DEPRECATED: unlock()
-    # def test_unlock_wrong_password_ERR(self):
-    #     """unlock with wrong password"""
-    #     buf = dttk.Buffer()
-    #     buf.lock("fred")
-    #
-    #     try:
-    #         buf.unlock("bert")
-    #         self.expect_exception()
-    #     except dttk.Buffer.LockedError:pass
-
-    #DEPRECATED: lock()
-    # def test_mutate_locked_ERR(self):
-    #     """mutate a locked buffer"""
-    #     buf = dttk.Buffer(b'ABCD')
-    #     buf.lock()
-    #
-    #     # setitem
-    #     try:
-    #         buf[0] = 1
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # create_from
-    #     try:
-    #         buf.create_from(b'1234')
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # prepend
-    #     try:
-    #         buf.prepend(b'1234')
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # extend
-    #     try:
-    #         buf.extend(b'1234')
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # ltrunc
-    #     try:
-    #         buf.ltrunc(1)
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # rtrunc
-    #     try:
-    #         buf.rtrunc(1)
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
-    #
-    #     # reset
-    #     try:
-    #         buf.reset()
-    #         self.expect_exception()
-    #     except dttk.Buffer.ImmutableModifyError: pass
 
 
 #----- TEST RADIO --------------------------------------------------------------
@@ -385,21 +274,21 @@ class TestRadio(unittest.TestCase):
         ssr = dttk.StdStreamRadio()
         send = ssr.send
 
-        buf = dttk.Buffer(b'hello world')
+        buf = newbuf(b'hello world')
         send(buf)
 
-        buf = dttk.Buffer(b'\x01\x02\x03\x04')
+        buf = newbuf(b'\x01\x02\x03\x04')
         send(buf)
 
     def test_mock_radio(self):
         EXPECTED = b'hello world'
         r = dttk.InMemoryRadio()
-        buf = dttk.Buffer(b'hello world')
+        buf = newbuf(b'hello world')
         r.send(buf)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         r.recvinto(buf)
-        data = buf.get_slice(0, len(buf))
+        data = buf[:]
         self.assertEqual(EXPECTED, data)
 
 #----- TEST PACKETISER SEND ----------------------------------------------------
@@ -449,7 +338,7 @@ class TestPacketiserReceive(unittest.TestCase):
         EXPECTED = None  # reads no data, then gets EOF
         gen = ByteStreamGenerator(b"hello")
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         nb = p.recvinto(b)
 
@@ -459,24 +348,24 @@ class TestPacketiserReceive(unittest.TestCase):
         """A valid sync wrapped packet is returned"""
         EXPECTED = b'hello'
         gen = ByteStreamGenerator(b'\xFFhello\xFF')
-        b = dttk.Buffer()
+        b = newbuf()
         p = dttk.Packetiser(gen)
 
         nb = p.recvinto(b)
 
         self.assertEqual(5, nb)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
     def test_rx_junk_sync(self):
         """Junk followed by sync followed by data, returns just data"""
         EXPECTED = b'hello'
         gen = ByteStreamGenerator(b'1234\xFFhello\xFF')
-        b = dttk.Buffer()
+        b = newbuf()
         p = dttk.Packetiser(gen)
 
         nb = p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
 
         self.assertEqual(5, nb)
         self.assertEqual(EXPECTED, actual)
@@ -485,11 +374,11 @@ class TestPacketiserReceive(unittest.TestCase):
         """An escaped FF is correctly decoded"""
         EXPECTED = b'**\xff**'
         gen = ByteStreamGenerator(b'\xFF**\xFE\xFD**\xFF')
-        b = dttk.Buffer()
+        b = newbuf()
         p = dttk.Packetiser(gen)
 
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
 
         self.assertEqual(EXPECTED, actual)
 
@@ -498,101 +387,85 @@ class TestPacketiserReceive(unittest.TestCase):
         EXPECTED = b'**\xfe**'
         gen = ByteStreamGenerator(b'\xFF**\xFE\xFE**\xFF')
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         p.recvinto(b)
 
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
     def test_rx_bad_esc(self):
         """A FE(non FC,FC) character should be handled consistently"""
         gen = ByteStreamGenerator(b'\xFFone\xFE\x02rest\xFF\xFFtwo\xFF')
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         EXPECTED1 = b'one\x02rest'
         p.recvinto(b)
-        actual1 = b.get_slice(0, len(b))
+        actual1 = b[:]
         self.assertEqual(EXPECTED1, actual1)
 
         EXPECTED2 = b'two'
         b.reset()
         p.recvinto(b)
-        actual2 = b.get_slice(0, len(b))
+        actual2 = b[:]
         self.assertEqual(EXPECTED2, actual2)
-
-    #NOTE: the Packetiser might need to handle this itself now
-    def FAILtest_rx_truncate_long(self):
-        """A long packet is truncated and dropped, resync to next packet"""
-        #NOTE, no return on truncated packet, if more to process
-
-        EXPECTED = b'ABCD'
-
-        gen = ByteStreamGenerator(b'\xFF12345678\xFF\xFFABCD\xFF')
-        p = dttk.Packetiser(gen)
-        b = dttk.Buffer(size=7)
-
-        p.recvinto(b)
-        actual = b.get_slice(0, len(b))
-
-        self.assertEqual(EXPECTED, actual)
 
     def test_rx_single_sync(self):
         """A single sync should still work"""
         gen = ByteStreamGenerator(b'\xFFone\xFFtwo\xFF')
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         EXPECTED = b'one'
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
         EXPECTED = b'two'
         b.reset()
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
         b.reset()
         EXPECTED = b''
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
     def test_rx_long_sync_run(self):
         """A long run of syncs should be seen as a sync boundary"""
         gen = ByteStreamGenerator(b'\xFF\xFF\xFF\xFFone\xFF')
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         EXPECTED = b'one'
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
         EXPECTED = b''
         b.reset()
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
     def test_rx_sync_in_esc(self):
         """A sync inside an esc should trash current packet and resync"""
         gen = ByteStreamGenerator(b'\xFFone\xFE\xFFrest\xFF\xFFtwo\xFF')
         p = dttk.Packetiser(gen)
-        b = dttk.Buffer()
+        b = newbuf()
 
         EXPECTED = b'rest'
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
         EXPECTED = b'two'
         b.reset()
         p.recvinto(b)
-        actual = b.get_slice(0, len(b))
+        actual = b[:]
         self.assertEqual(EXPECTED, actual)
 
 
@@ -610,7 +483,7 @@ class DummyRadio:
     def send(self, data:dttk.Buffer or None) -> bool:
         # just keep pumping bytes into the tx queue
         if data is None:  return False  # could be used to CLOSE_CONNECTION/EOF
-        packet = data.get_slice(0, len(data))
+        packet = data[:]
         ##print("DummyRadio:send:%d %s" % (len(packet), dttk.hexstr(packet)))
 
         self._tx_queue.extend(packet)
@@ -643,13 +516,13 @@ class DummyRadio:
         ##print("DummyRadio:recv %s %s" % (nb, dttk.hexstr(packet)))
         return nb
 
-#TODO: use a Packetiser factory method to do this class wrapping
+#IDEA: use a Packetiser factory method to do this class wrapping
 #then we can pass DummyRadio(rxlens) to it.
 class PacketisedDummyRadio(dttk.Link):
     def __init__(self):
         dttk.Link.__init__(self)
         dr = DummyRadio()
-        self._send_packetiser = dttk.Packetiser(dr)  #TODO: need a way to pass the rxlens
+        self._send_packetiser = dttk.Packetiser(dr)  #NOTE: need a way to pass the rxlens
         self._recv_packetiser = dttk.Packetiser(dr)
         # direct dispatch, faster
         self.send = self._send_packetiser.send
@@ -657,7 +530,7 @@ class PacketisedDummyRadio(dttk.Link):
 
     def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
         nb = self._recv_packetiser.recvinto(buf, info, wait=True)
-        ##print("Packetiser.recvinto:%s %s" % (nb, dttk.hexstr(buf.get_slice(0, len(buf)))))
+        ##print("Packetiser.recvinto:%s %s" % (nb, dttk.hexstr(buf[:])))
         assert nb is not None, "<<recvinto HERE"  #temporary hard stop
         return nb
 
@@ -671,8 +544,8 @@ class TestPacketiserBoth(unittest.TestCase):
     # rad = dttk.InMemoryRadio()
     # self.sender = dttk.Packetiser(rad)
     # self.receiver = dttk.Packetiser(rad)
-    # self.tx_buf = dttk.Buffer()
-    # self.rx_buf = dttk.Buffer()
+    # self.tx_buf = newbuf()
+    # self.rx_buf = newbuf()
     #     DATA = b'*ABCD*'
     #     raw = bytes([len(DATA)]) + DATA
     #     self.tx_buf.create_from(raw)
@@ -681,18 +554,18 @@ class TestPacketiserBoth(unittest.TestCase):
     #     nb = self.receiver.recvinto(self.rx_buf, info={"trace":1})
     #
     #     self.assertEqual(len(raw), nb)
-    #     actual = self.rx_buf.get_slice(0, len(self.rx_buf))
+    #     actual = self.rx_buf[:]
     #     self.assertEqual(raw, actual)
     #
     #     print(dttk.packetiser_stats)  #DIAGS
 
     def test_send_file(self):
         """Send a whole file"""
-        TX_FILENAME = TESTDATA + "/testdata.txt"
+        TX_FILENAME = "testdata.txt"
         ##TX_FILENAME = "dttk.py"
         ##TX_FILENAME = "stars.txt"
         RX_FILENAME = "received.txt"
-        rad = PacketisedDummyRadio()  #TODO: pass nb receive pattern here
+        rad = PacketisedDummyRadio()  #NOTE: pass nb receive pattern here
         link_manager = dttk.LinkManager(rad)
         BLOCK_SIZE = 50
 
@@ -705,7 +578,7 @@ class TestPacketiserBoth(unittest.TestCase):
             return dttk.FileReceiver(link_manager, filename, progress_fn=None)
 
         # send the whole file via packetiser/link into the tx_queue first
-        # as it means the receiver never blocks (TODO might be a bad idea?)
+        # as it means the receiver never blocks (NOTE might be a bad idea?)
         send_file_task(TX_FILENAME).run()
 
         # now receive from the tx queue
@@ -721,10 +594,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x02\x01\x00')
         receiver = dttk.LinkReceiver(gen)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
-
+        result = buf[:]
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
 
@@ -735,9 +607,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x04\x00\x00\xCD\xCC')
 
         receiver = dttk.LinkReceiver(gen)
-        buf = dttk.Buffer()
+        buf = newbuf()
         receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
+        result = buf[:]
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
 
@@ -748,9 +620,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x04\x00\x00\xCD\xCD')
         receiver = dttk.LinkReceiver(gen)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
+        result = buf[:]
 
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
@@ -762,9 +634,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x04\x01\x00\xFE\xFD')
         receiver = dttk.LinkReceiver(gen)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
+        result = buf[:]
 
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
@@ -776,9 +648,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x05\x00\x00\x2B\x37\x7D')
         receiver = dttk.LinkReceiver(gen)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         nb = receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
+        result = buf[:]
 
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
@@ -790,9 +662,9 @@ class TestLinkReceiver(unittest.TestCase):
         gen = ByteStreamGenerator(b'\x05\x00\x00\xFF\x37\x7D')
         receiver = dttk.LinkReceiver(gen)
 
-        buf = dttk.Buffer()
+        buf = newbuf()
         nb = receiver.recvinto(buf)
-        result = buf.get_slice(0, len(buf))
+        result = buf[:]
 
         ##self.assertEqual(EXPECTED_ERROR, receiver.get_error())
         self.assertEqual(EXPECTED_RESULT, result)
@@ -826,7 +698,7 @@ class InteractiveLink(dttk.Link):
 def test_packetiser():
     """Simple interactive tester"""
     p = dttk.Packetiser(InteractiveLink())
-    b = dttk.Buffer()
+    b = newbuf()
 
     while True:
         res = p.recvinto(b)
@@ -836,7 +708,7 @@ def test_packetiser():
         if res == 0: #NODATA
             print("NODATA")
         else:
-            print("DATA:%s" % str(b.get_slice(0, len(b))))
+            print("DATA:%s" % str(b[:]))
             b.reset() # only clear, once it is used
 
 if __name__ == "__main__":

@@ -11,10 +11,11 @@ try:
     from ftag_pico import *
 
 except ImportError:
+    ##print(e)
     # we are on Host
     from ftag_host import *
 
-TX_FILENAME = dttk.deps.TESTDATA + "/test35k.jpg"
+TX_FILENAME = "test35k.jpg"
 RX_FILENAME = "received.jpg"
 
 def show_dir(dir_name:str, dir_path:str) -> None:
@@ -23,46 +24,67 @@ def show_dir(dir_name:str, dir_path:str) -> None:
         print("  ", name)
 
 def files() -> None:
-    if dttk.deps.TESTDATA != '.':
-        show_dir("testdata", dttk.deps.TESTDATA)
     show_dir("cwd", ".")
 
 def help() -> None:
-    print("PICO file transfer agent demonstration")
+    print("FTAG File Transfer Agent demonstrator")
     print("  ftag.help()     - show this help message")
     print("  ftag.files()    - list files in local file system")
     print("  ftag.loopback() - send and receive via UART0 loopback")
     print("  ftag.send()     - send a test file via UART0")
     print("  ftag.receive()  - receive a test file via UART0")
 
-# experiments show that about 11pps doesn't stress the receiver too much
-def send(filename:str=TX_FILENAME, pps:int=11) -> None:
+#Throttled send, by default.
+DEFAULT_PPS = 40  # experimental evidence shows this keeps a 512+32 receive ok
+def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS) -> None:
     print("sending:%s" % filename)
+    sender = send_file_task(filename)
     if pps is not None:
         print("  throttled at %d PPS" % pps)
-        send_task = send_file_task(filename).tick
         while True:
-            start_ms = dttk.deps.time_ms()
-            if not send_task(): break  # finished
+            start_ms = platdeps.time_ms()
+            if not sender.tick(): break  # finished
             if pps is not None:
-               time_per_packet_ms = dttk.deps.time_ms() - start_ms
+               time_per_packet_ms = platdeps.time_ms() - start_ms
                delay_time_ms = int((1000 - (time_per_packet_ms * pps)) / pps)
-               dttk.deps.time_sleep_ms(delay_time_ms)
+               platdeps.time_sleep_ms(delay_time_ms)
     else:
-        send_file_task(filename).run()
+        sender.run()
 
+    print_stats("tx", sender)
     print("send complete")
 
 def receive(filename:str=RX_FILENAME) -> None:
     print("receiving:%s" % filename)
-    receive_file(filename)
+    receiver = receive_file_task(filename)
+    receiver.run()
+
+    print_stats("rx", receiver)
+
     print("receive complete")
 
 def loopback(tx_filename:str=TX_FILENAME, rx_filename:str=RX_FILENAME) -> None:
     print("loopback %s->%s running" % (tx_filename, rx_filename))
     sender   = send_file_task(tx_filename)
     receiver = receive_file_task(rx_filename)
+
     tasking.run_all([sender, receiver])
+
+    #TEST CODE
+    # # show task progress, so we can spot lockups
+    # s = True
+    # r = True
+    # while s or r:
+    #     if s:
+    #         print("send")
+    #         s = sender.tick()
+    #     if r:
+    #         print("recv")
+    #         r = receiver.tick()
+
+    print_stats("tx", sender)
+    print_stats("rx", receiver)
+
     print("loopback complete")
 
 if __name__ == "__main__":

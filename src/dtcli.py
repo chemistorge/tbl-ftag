@@ -24,16 +24,16 @@ def parse_send_args(argv) -> dict:
         elif filename is None:  filename = arg
 
     if filename is None:
-        exit("usage: sender.py [-p] <filename>")
+        exit("usage: dtcli.py --send [-p] <filename>")
 
     return {"filename": filename, "progress": progress}
 
 def run_send(filename:str, progress:bool=False) -> None:
     """Send a file using packetiser and std streams"""
-    #IDEA: might reuse the progresser from within ftag_host here
-    p = None if not progress else ftag.dttk.Progresser("tx").update
-    #IDEA: this construction should be in ftag_host really, get the sender_task()
-    ftag.dttk.FileSender(filename, link_manager, progress_fn=p, blocksz=50).run()
+    #NOTE: progress flag not supported currently
+    sender = ftag.send_file_task(filename, link=link_manager)
+    sender.run()
+    ftag.print_stats("tx", sender)
 
 #----- RECEIVER ----------------------------------------------------------------
 
@@ -51,17 +51,16 @@ def parse_receive_args(argv) -> dict:
         elif filename is None:  filename = arg
 
     if filename is None:
-        exit("usage: receiver.py [-p] <filename>")
+        exit("usage: dtcli.py --receive [-p] <filename>")
 
     return {"filename": filename, "progress": progress}
 
 def run_receive(filename:str, progress:bool=False):
     """Receive a file using packetiser and std streams"""
-    #IDEA: might reuse the progresser from ftag_host here
-    p = None if not progress else ftag.dttk.Progresser("rx").update
-    ftag.dttk.FileReceiver(link_manager, filename, progress_fn=p).run()
-    ##print("<<LINK STATS:%s" % str(dttk.link_stats))
-    ##print("<<PACKETISER STATS:%s" % str(dttk.packetiser_stats))
+    #NOTE: progress flag not supported currently
+    receiver = ftag.receive_file_task(filename, link=link_manager)
+    receiver.run()
+    ftag.print_stats("rx:", receiver)
 
 #----- BIN2HEX -----------------------------------------------------------------
 
@@ -243,8 +242,8 @@ def main(argv) -> None:
 
     except BrokenPipeError:
         sys.stderr.write("%s: broken pipe\n" % tool_name[2:])
-    except KeyboardInterrupt:
-        sys.stderr.write("\n%s: CTRL-C\n" % tool_name[2:])
+    ##except KeyboardInterrupt:
+    ##    sys.stderr.write("\n%s: CTRL-C\n" % tool_name[2:])
 
 if __name__ == "__main__":
     main(sys.argv[1:])

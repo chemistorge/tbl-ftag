@@ -3,6 +3,7 @@
 ## loading code to both Picos
 
 Install the rshell utility
+
 ```bash
 pip3 install rshell
 ```
