@@ -11,8 +11,16 @@ import dttk
 from machine import UART, Pin
 import perf
 
+# radio is an optional component
+try:
+    from radio import RadioISM
+except ImportError:
+    RadioISM = None
+
 print("OPTION=%s" % myboard.OPTION)
 
+
+#----- UART PHY ----------------------------------------------------------------
 class UStats:
     def __init__(self):
         ##self.data = 0
@@ -21,8 +29,10 @@ class UStats:
         self.minbytes = None
         self.maxbytes = None
         ##self.rdsizes  = []
+        self._updated = False
 
     def update(self, nb:int) -> None:
+        self._updated = True
         ##self.data += 1
         # MINMAX for what we read in each chunk from the uart peripheral
         if self.minbytes is None:
@@ -38,12 +48,14 @@ class UStats:
         ## keep a list of read sizes into the buffer
         ##DISABLED self.rdsizes.append(nb)
 
+    def has_data(self) -> bool:
+        return self._updated
+
     def __str__(self) -> str:
         return "rxfull:%d minbytes:%s maxbytes:%s" % (
             self.rxfull, str(self.minbytes), str(self.maxbytes))
 
 uart_stats = UStats()
-
 
 class UartLink(dttk.Link):
     MTU = 64  # if None, no MTU is enforced
@@ -82,20 +94,15 @@ class UartLink(dttk.Link):
             ##print("delay %d ms" % self.INTER_PACKET_DELAY_MS)
             platdeps.time_sleep_ms(self.INTER_PACKET_DELAY_MS)
 
-    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:int=0) -> int or None:
         _ = info  # argused
         assert len(buf) == 0, "Uart expects an empty/reset buffer, len was:%d" % len(buf)
 
+        ends_at = platdeps.time_ms() + wait
         while True:
-            if self._uart.any() == 0:
-                # no data waiting
-                if not wait:
-                    ##uart_stats.nodata += 1
-                    return 0  # NODATA
-
-            else: # some data waiting
+            if self._uart.any() > 0:
+                # some data waiting
                 nb = buf.write_with(self._uart.readinto)  # will clamp to buf size
-
                 uart_stats.update(nb)
 
                 if nb == buf.get_max():
@@ -103,9 +110,16 @@ class UartLink(dttk.Link):
                     uart_stats.rxfull += 1
                 return nb
 
+            else:
+                # no data waiting
+                if platdeps.time_ms() >= ends_at:
+                    ##uart_stats.nodata += 1
+                    return 0  # NODATA
+
+
 #IDEA: we can probably add a factory method to Packetiser that creates
 #a wrapped class with a packetiser on outside
-class UartRadio(dttk.Link):
+class PacketisedUart(dttk.Link):
     """A packetised version of a UartLink"""
     #NOTE: no need for a MTU on a stream really, so largest is
     #1 + (255*2) due to how FE & FF expand to 2 bytes with packetiser
@@ -120,10 +134,35 @@ class UartRadio(dttk.Link):
         self.recvinto = self._packetiser.recvinto
 
 
-radio = UartRadio(myboard.UartCfg.PORT, myboard.UartCfg.BAUD_RATE,
-                  myboard.UartCfg.TX_GPN, myboard.UartCfg.RX_GPN)
+#----- GENERIC SETUP -----------------------------------------------------------
 
-link_manager = dttk.LinkManager(radio)
+def get_phy():
+    """Get the physical link - configurable"""
+    while True:
+        while True:
+            choice = input("[U]ART or [R]adio [UR]?")
+            if choice in ('U', 'R', 'u', 'r'):
+                choice = choice.upper()
+                break
+
+        if choice == 'U':
+            packetised_uart = PacketisedUart(
+                myboard.UartCfg.PORT, myboard.UartCfg.BAUD_RATE,
+                myboard.UartCfg.TX_GPN, myboard.UartCfg.RX_GPN)
+            return packetised_uart
+
+        if choice == 'R':
+            if RadioISM is None:
+                print("Radio not present")
+                continue
+            else:
+                radio = RadioISM()
+                radio.on()
+                return radio
+
+        assert False  # should not get here
+
+link_manager = dttk.LinkManager(get_phy())
 
 txp = dttk.Progresser("tx").update
 ##tx_bar = dttk.ProgressBar()
@@ -147,6 +186,7 @@ def rx_progress(msg:str or None=None, value:int or None=None) -> None:
     rxp(msg)
 ##rx_progress = None
 
+
 #----- TRANSFER TASKS ----------------------------------------------------------
 def send_file_task(filename:str) -> dttk.Sender: # or exception
     """Non-blocking sender for a single file (as a task that has a tick())"""
@@ -165,17 +205,17 @@ def receive_file_task(filename:str) -> dttk.Receiver: # or exception
 #    # NOISE_SPEC = {"prob": 1, "byte": (1,10)}
 #    # noise_gen = dttk.NoiseGenerator(NOISE_SPEC).send
 #    # def noisy_receive(info:dict or None=None) -> bytes or None:
-#    #     return noise_gen(radio.recvinto(buf, info))
+#    #     return noise_gen(packetised_uart.recvinto(buf, info))
 #    # receiver = dttk.FileReceiver(noisy_receive, filename, progress_fn=rx_progress)
 #    # return receiver  # has-a tick() and run()
 
-def print_stats(name:str, task) -> None:
-    """Host-specific print_stats for sender or receiver"""
-    platdeps.message("stats for:%s" % name)
-    platdeps.message("  uart:     %s" % str(uart_stats))
-    platdeps.message("  link:     %s" % str(dttk.link_stats))
-    platdeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    platdeps.message("  transfer: %s" % task.get_stats())
+def print_stats(name:str or None=None, task=None) -> None:
+    """Pico-specific print_stats for sender or receiver"""
+    if name is not None:                 platdeps.message("STATS:%s" % name)
+    if uart_stats.has_data():            platdeps.message("uart: %s" % str(uart_stats))
+    if dttk.link_stats.has_data():       platdeps.message("link: %s" % str(dttk.link_stats))
+    if dttk.packetiser_stats.has_data(): platdeps.message("pkt:  %s" % str(dttk.packetiser_stats))
+    if task is not None:                 platdeps.message("xfer: %s" % task.get_stats())
 
 #END: ftag_pico.py
 

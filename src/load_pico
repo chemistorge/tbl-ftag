@@ -23,6 +23,8 @@ cp ftag_pico.py /pyboard
 cp perf.py /pyboard
 cp tasking.py /pyboard
 cp myboard.py /pyboard
+cp radio.py /pyboard
+cp test_radio.py /pyboard
 cp test35k.jpg /pyboard
 cp testdata.txt /pyboard
 rm /pyboard/received.jpg

@@ -51,16 +51,17 @@ def receive_file_task(filename:str, link=None) -> dttk.Receiver: # or exception
 # NOISE_SPEC = {"prob": 1, "byte": (1,10)}
 # noise_gen = dttk.NoiseGenerator(NOISE_SPEC).send
 # def noisy_receive(info:dict or None=None) -> bytes or None:
-#     return noise_gen(radio.recvinto(buf, info))
+#     return noise_gen(packetised_link.recvinto(buf, info))
 # receiver = dttk.FileReceiver(noisy_receive, filename, progress_fn=rx_progress)
 # return receiver  # has-a tick() and run()
 
-def print_stats(name:str, task) -> None:
+
+def print_stats(name:str or None=None, task=None) -> None:
     """Host-specific print_stats for sender or receiver"""
-    platdeps.message("stats for:%s" % name)
-    platdeps.message("  link:     %s" % str(dttk.link_stats))
-    platdeps.message("  pkt:      %s" % str(dttk.packetiser_stats))
-    platdeps.message("  transfer: %s" % task.get_stats())
+    if name is not None:                 platdeps.message("STATS:%s" % name)
+    if dttk.link_stats.has_data():       platdeps.message("link: %s" % str(dttk.link_stats))
+    if dttk.packetiser_stats.has_data(): platdeps.message("pkt:  %s" % str(dttk.packetiser_stats))
+    if task is not None:                 platdeps.message("xfer: %s" % task.get_stats())
 
 #END: ftag_host.py
 

@@ -74,11 +74,29 @@ this scheduled sender system also scales down well to very slow background
 file transfer systems (e.g. it might scale down well to LoRa based file
 transfer that takes place over a large number of days).
 
+You can actually start the sender and receiver at any time, in any order.
+The FTAG sender sends a meta-data message including the filename and
+file size information. It does this several times at the start of the 
+transfer, and also interleaves some meta-messages throughout the normal
+transfer. This means that if the receiver starts later, it will wait until
+it sees a meta-message, and then start receiving and storing any blocks.
+Because the receiver ticks-off the blocks in a bitmap, it knows which blocks
+to accept and which to ignore. At the end of the transfer, the sender will
+send an END control message, and the receiver will either have all of the
+blocks (or if it missed some or started late), you might see a message saying
+```run send() again to receive the rest of the blocks```. Just start the sender
+again and when the receiver has received all of its blocks, the transfer will
+end normally.
+
 FTAG also performs a final integrity check of the transferred file; the 
 sender takes a SHA256 hash of the whole file and sends it along with file
 size and name information in a meta-message. When the receiver has received
 all blocks, it verifies the SHA256 hash, and only writes the file to the
-filing system when it is completely received.
+filing system when it is completely received. It is unusual to see a SHA
+verification error here, if you do then either there is a bug in the software
+(as all blocks are CRC protected and ticked-off in a bitmap), or it means
+that memory or the file system corrupted the file before it was verified.
+Verification won't even run if a partial file has been received.
 
 
 ## Architecture
@@ -126,6 +144,12 @@ codebase.
 
 
 ## Limitations
+
+* Radio support is working, but not included in this repo yet.
+That is because we are currently validating the spectral masks of the radio
+to ensure it fits within the regulations, while achieving the best compromise
+betweeen range and transfer speed. We will release the ```radio.py``` here, once
+that validation is completed.
 
 * Don't expect this to work on a BBC micro:bit (yet!).
 

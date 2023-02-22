@@ -60,7 +60,7 @@ def run_receive(filename:str, progress:bool=False):
     #NOTE: progress flag not supported currently
     receiver = ftag.receive_file_task(filename, link=link_manager)
     receiver.run()
-    ftag.print_stats("rx:", receiver)
+    ftag.print_stats("rx", receiver)
 
 #----- BIN2HEX -----------------------------------------------------------------
 
