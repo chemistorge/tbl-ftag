@@ -20,7 +20,7 @@ class ByteStreamGenerator(dttk.Link):
         self._data = data
         self._idx = 0
 
-    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:int=0) -> int or None:
         """Copy as much data in as we have and buf will accept"""
         _ = info  # argused
         remaining = len(self._data) - self._idx
@@ -498,7 +498,7 @@ class DummyRadio:
         self._rx_idx += 1
         return nb
 
-    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:int=0) -> int or None:
         # blocking receive, assumes we always transmit first to the queue
         nb = self._get_next_nb()
         ##print("recvinto: next nb:%s" % nb)
@@ -528,8 +528,8 @@ class PacketisedDummyRadio(dttk.Link):
         self.send = self._send_packetiser.send
         ##self.recvinto = self._packetiser.recvinto
 
-    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:bool=False) -> int or None:
-        nb = self._recv_packetiser.recvinto(buf, info, wait=True)
+    def recvinto(self, buf:dttk.Buffer, info:dict or None=None, wait:int=0) -> int or None:
+        nb = self._recv_packetiser.recvinto(buf, info, wait=1)  #TODO: now in ms, manifest constant?
         ##print("Packetiser.recvinto:%s %s" % (nb, dttk.hexstr(buf[:])))
         assert nb is not None, "<<recvinto HERE"  #temporary hard stop
         return nb
@@ -678,9 +678,10 @@ class InteractiveLink(dttk.Link):
         print("data:%s" % str(data))
 
     @staticmethod
-    def recvinto(user_buf:dttk.Buffer, info:dict or None=None) -> int or None:
+    def recvinto(user_buf:dttk.Buffer, info:dict or None=None, wait:int=0) -> int or None:
         assert isinstance(user_buf, dttk.Buffer), "want:Buffer, got:%s" % str(type(user_buf))
         _ = info  # argused
+        _ = wait  # argused
         l = user_buf.get_max()
         try:
             d = input("data(%d)> " % l)

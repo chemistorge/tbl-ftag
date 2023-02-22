@@ -38,7 +38,7 @@ def run_all(tasks:list, trace:callable or None=None) -> None:
             i += 1
 
 def test():
-    class Task():
+    class Task:
         def __init__(self, name:str, v:int):
             self._name = name
             self._v = v

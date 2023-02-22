@@ -15,7 +15,7 @@ import perf
 import gc
 
 @micropython.viper
-# TODO: use the memoryview/slice rather than pass length
+# TODO: use the memoryview/slice rather than pass length, then len(data)
 def crc16(data: ptr8, length: int) -> int:
     CRC16_POLY = 0x1021  # CCITT-16  #TODO const()?
     crcsum = 0xFFFF
@@ -244,16 +244,35 @@ class BitSet:
     """A set of bits, packed efficiently into words"""
     WORD_SIZE = 8
 
+    EMPTY = "."
+    CHARS = "123456789X"
+
     def __init__(self, nflags:int) -> None:
         self._nflags    = nflags
         self._nsetflags = 0
         self._flags = bytearray(nflags)
+
+        line_len = 80
+
+        if nflags/line_len <= len(self.CHARS):
+            # we can fill a whole line, with up to 11 flags per char
+            flags_per_char = len(self.CHARS)
+            line_len        = round(nflags / flags_per_char)
+        else:
+            # line_len stays at 80, scale use of chars to fit that
+            flags_per_char = round(nflags / line_len)
+
+        # save calculated state
+        self._flags_per_char = flags_per_char
+        self._line_len       = line_len
+        self._nflags         = nflags
 
     def __len__(self) -> int:
         return self._nflags
 
     def _indexof(self,flag:int) -> tuple: # of (wordidx:int, bitidx:int)
         """Get the list index of this flag"""
+        assert flag < self._nflags, "max:%d, got:%d" % (self._nflags-1, flag)
         return int(flag / self.WORD_SIZE), flag % self.WORD_SIZE
 
     def  __getitem__(self, index:int) -> bool:
@@ -284,11 +303,31 @@ class BitSet:
             ##platdeps.message(self._flags)
 
     def __str__(self) -> str:
-        """Get a string representation of all bits"""
-        res = []
-        for i in range(self._nflags):
-            res.append("1" if self[i] else "0")
-        return "".join(res)
+        """Create a line of chars showing percentage of flags set across the range"""
+        result = []
+        flag_no = 0
+        while flag_no < self._nflags:
+            # count of flag bits set, represented by this char
+            count = 0
+            f = flag_no
+            while f < self._nflags and f < flag_no+self._flags_per_char:
+                if self[f]: count += 1
+                f += 1
+
+            # turn it into a char that represents how many bits set in char
+            num = int(count * len(self.CHARS) / self._flags_per_char)
+            if count == 0: ch = self.EMPTY  # no flags set in this region
+            else:          ch = self.CHARS[num-1]
+            result.append(ch)
+            flag_no += self._flags_per_char
+        return "".join(result)
+
+    def __repr__(self) -> str:
+        result = []
+        for flag_no in range(self._nflags):
+            if flag_no % self.WORD_SIZE == 0: result.append(" ")
+            result.append("1" if self[flag_no] else "0")
+        return "".join(result)
 
     def is_complete(self) -> bool:
         """If all nflags flags are set, returns True"""
@@ -723,7 +762,7 @@ class Link:
         # bool: #IDEA: done or not done, tx flow control
         assert False, "Link.send needs overriding by subclass"
 
-    def recvinto(self, user_buf: Buffer, info: dict or None = None, wait:bool=False) -> int or None:
+    def recvinto(self, user_buf: Buffer, info: dict or None = None, wait:int=0) -> int or None:
         assert False, "Link.recvinto needs overriding by subclass"
 
 
@@ -789,6 +828,8 @@ class Link:
             ##platdeps.message("dispatch %s %s to fn %s" % (str(data), str(info), str(h_fn)))
             h_fn(data, info)
 
+#TODO: provide a fast update() for better encapsulation?
+#beware of performance hits with indirection
 class PStats:
     def __init__(self):
         self.buf_fills    = 0
@@ -812,8 +853,11 @@ class PStats:
         self.junked_bytes = 0
         self.bad_plens    = 0
 
+    def has_data(self) -> bool:
+        return self.buf_fills != 0
+
     def __str__(self) -> str:
-        return "bfill:%d bovr:%d protv:%d allp:%d trunce:%d truncb:%d badp:%d junkb:%d badplen:%d" % (
+        return "bfill:%d bovr:%d protv:%d allp:%d trunce:%d truncb:%d badp:%d junkb:%d plen:%d" % (
             self.buf_fills,
             self.buf_overflow,
             self.prot_violate,
@@ -900,7 +944,7 @@ class Packetiser(Link):
     _STATE_ESCAPED    = 5
     _STATE_GOT_PACKET = 6
 
-    def recvinto(self, user_buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, user_buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         _ = info  # argsused
         # don't clear user_buf here, it might have partial packet from prev call
         #NOTE: if wait is always True, we would expect user_buf to always be empty
@@ -922,7 +966,8 @@ class Packetiser(Link):
                 # might validly be partially processed data in user_buf
                 # so user must pass that back in again next time to 'finish it off'
                 if nb == 0:
-                    assert not wait, "got nb0 when wait=True"
+                    ## wait is now an integer, not a bool
+                    ##assert not wait, "got nb0 when wait=True"
                     ##platdeps.message("pkt:NODATA(0)")
                     return 0  # NODATA (yet), but might be partial in rx_buf
 
@@ -1213,6 +1258,7 @@ class LinkSenderFor(Link):
         else:            info[LinkMessage.CHANNEL] = self._channel
         self._link_sender.send(data, info)
 
+#TODO: provide an update() method for better encapsulation
 class LStats:
     def __init__(self):
         self._total = 0
@@ -1222,8 +1268,11 @@ class LStats:
         self._seqno = 0
         self._crc = 0
 
+    def has_data(self) -> bool:
+        return self._total != 0
+
     def __str__(self) -> str:
-        return "total:%d badlen:%d shorthdr:%d long:%d seqno:%d crc:%d" % (
+        return "tot:%d badlen:%d shorthdr:%d long:%d seqno:%d crc:%d" % (
             self._total,
             self._badlen,
             self._shorthdr,
@@ -1247,7 +1296,7 @@ class LinkReceiver(Link):
         """Get the next expected receive sequence number"""
         return self._next_seqno
 
-    def recvinto_for(self, buf:Buffer, info:dict or None=None, channel:int or None=None, wait:bool=False) -> int or None:
+    def recvinto_for(self, buf:Buffer, info:dict or None=None, channel:int or None=None, wait:int=0) -> int or None:
         """Receive a message for a specific channel (or pump via mux to channel handler)"""
         # if there is a message and it is not for us, pump it via mux to handler,
         # so we don't have to queue incoming messages and so they don't get lost.
@@ -1270,7 +1319,7 @@ class LinkReceiver(Link):
         if actual_chn is not None and channel == actual_chn:  return nb    # it is our channel
         return 0  #NODATA (for this caller)
 
-    def recvinto(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         """Receive the next valid link message, separate out data and header"""
         nb = self.get_next_packet_into(buf, info, wait=wait)
         if nb is None:  return None  #EOF (CONNECTION_CLOSED)
@@ -1284,7 +1333,7 @@ class LinkReceiver(Link):
         return len(buf)
 
     @perf.measure
-    def get_next_packet_into(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def get_next_packet_into(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         """Receive and validate a link layer message (but don't fully decode)"""
         nb = self._link.recvinto(buf, info, wait=wait)
         if nb is None:  return None  # EOF (e.g. CONNECTION_CLOSED)
@@ -1373,7 +1422,7 @@ class LinkReceiverFor(Link):
         self._link_receiver = link_receiver
         self._channel = channel
 
-    def recvinto(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         """Receive for self._channel only"""
         return self._link_receiver.recvinto_for(buf, info, self._channel, wait=wait)
 
@@ -1548,12 +1597,12 @@ class Receiver:
     # This is the base of all receivers, it can receive anything that offers a recvinto() fn,
     # and route it to anything that has a writer() callback, including screen displays,
     # actuators, and disk files.
-
-    _STATE_STARTING      = 0
-    _STATE_TRANSFERRING  = 1
-    _STATE_FINISHING     = 2
-    _STATE_FINISHED_OK   = 3
-    _STATE_FINISHED_ERR  = 4
+    _STATE_STARTING      = 0    # waiting for meta-message
+    _STATE_TRANSFERRING  = 1    # got a meta-message
+    _STATE_CHK_COMPLETE  = 2    # got an end message
+    _STATE_VERIFYING     = 3    # blockmap complete, verify and FINISHED(OK or ERR)
+    _STATE_FINISHED_OK   = 4
+    _STATE_FINISHED_ERR  = 5
 
     def __init__(self, link:Link, writer_fn:callable, progress_fn:callable or None=None):
         self._link      = link
@@ -1578,24 +1627,38 @@ class Receiver:
         self._blocksz = blocksz
         self._state = self._STATE_TRANSFERRING
 
-    def tick(self) -> bool:
+    def tick(self, wait:int=10) -> bool:
         """Pump regular receive processing"""
         if self._is_running:
-            self.do_next_recv(wait=True)
-            if self._state == self._STATE_FINISHING:
-                self.end_transfer()
+            self.do_next_recv(wait=wait)
+            if self._state == self._STATE_CHK_COMPLETE:
+                platdeps.message("<<< END RECEIVED!") ##TESTING
+                if self._blockmap.is_complete():
+                    # End message and complete, so verify it
+                    self._state = self._STATE_VERIFYING
+
+                else: # not full yet
+                    platdeps.message(str(self._blockmap))
+                    platdeps.message("use send() again, to receive final blocks")
+                    self._state = self._STATE_STARTING  # need metadata again
+
+            elif self._state == self._STATE_VERIFYING:
+                self.end_transfer()  # will change to ERR or OK
                 self._is_running = False
 
             elif self._state in (self._STATE_FINISHED_ERR, self._STATE_FINISHED_OK):
-                self._is_running = False  # stop the task
+                # a stopped task doesn't restart if called again, it stays stopped
+                self._is_running = False
 
         return self._is_running
 
     def run(self) -> None:
         """Run task to completion"""
-        while self.tick(): pass
+        #TODO: change to None, as 0xFFFFFFFF might overflow on some platforms
+        FOREVER = 0xFFFFFFFF
+        while self.tick(wait=FOREVER): pass
 
-    def do_next_recv(self, info:dict or None=None, wait:bool=False) -> None:
+    def do_next_recv(self, info:dict or None=None, wait:int=0) -> None:
         """Poll for a receive message, and process it if it is there"""
         ##assert self._is_running, "data receive attempted when Receiver not running"
 
@@ -1624,10 +1687,11 @@ class Receiver:
                         self.commit_data(data, info)
 
                     if self._blockmap.is_complete():
-                        self._state = self._STATE_FINISHING
+                        # complete, before we saw END message
+                        self._state = self._STATE_VERIFYING
 
         if data is None:  # EOF ON LINK
-            self._state = self._STATE_FINISHING
+            self._state = self._STATE_CHK_COMPLETE
 
     def commit_data(self, data:Buffer, info:dict) -> None:
         """Commit data to the writer"""
@@ -1684,7 +1748,7 @@ class Receiver:
     def end_transfer(self) -> None:
         """Called when a transfer ends, can be overriden for other checks or state changes"""
         self.finished_ok("Receiver ends transfer, all done")
-        #NOTE, sub class can change to _STATE_FINISHING if it wants to
+        #NOTE, sub class can change to _STATE_VERIFYING if it wants to
         #trigger end effects in the tick later.
 
     def finished_err(self, msg:str or None=None) -> None:
@@ -1836,7 +1900,7 @@ class FileReceiver(Receiver):
             platdeps.message("warning: short START message, ignoring: %s" % hexstr(data))
             return False  # SHORT START
 
-        #check what byte 0 is? It's the type byte, previously selected?
+        #NOTE:check what byte [0] is? It's the type byte, previously selected?
         nblocks      = (data[1]<<8) | data[2]
         blocksz      = data[3]
         lastblock    = data[4]
@@ -1868,9 +1932,9 @@ class FileReceiver(Receiver):
                 lastblock != self._lastblock or \
                 sha256 != self._sha256 or \
                 filename != self._remote_filename:
-                platdeps.message("warning: duplicate metadata received, but DIFFERENT!")
-                return False  # NOT HANDLED  IDEA: might stop transfer?
+                self.finished_err("new metadata, but file is DIFFERENT")
 
+        ##platdeps.message(str(self._blockmap)) # TESTING
         return True  # HANDLED
 
     def _decode_end_msg(self, data:Buffer) -> bool:
@@ -1884,16 +1948,17 @@ class FileReceiver(Receiver):
             self._lastblock       is not None and \
             self._sha256          is not None and \
             self._remote_filename is not None:
+            # meta-data is known, so...
             # process the end-event consistently, to make sure last-block handled
             # in the recvinto correctly
-            self._state = self._STATE_FINISHING
+            self._state = self._STATE_CHK_COMPLETE
 
             return True  # HANDLED
 
         return False  # NOT HANDLED
 
     # called by: _end_msg()
-    # also can be called by end effects due to _STATE_FINISHING
+    # also can be called by end effects due to _STATE_VERIFYING
     def end_transfer(self) -> None:
         """Overrides parent, for special integrity check"""
         # deregister for callbacks, so we don't get future repeats past the end
@@ -1958,9 +2023,9 @@ class InMemoryRadio:
     def _write(self, values:bytes) -> None:
         self._waiting = values
 
-    def recvinto(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         _ = info  # argused
-        _ = wait  # argused
+        _ = wait  # argused NOTE: wait semantics not supported for in-process
         if self._waiting is None:
             #NOTE: wait=True is not supported, just ignore it
             return 0  #NODATA
@@ -1985,7 +2050,8 @@ class StdStreamLink(Link):
     def send(self, data:Buffer or None, info:dict or None=None) -> None:
         data.read_with(self._write)
 
-    def recvinto(self, buf:Buffer, info:dict or None=None, wait:bool=False) -> int or None:
+    def recvinto(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
+        #NOTE: info and wait not used by this Link?
         return buf.write_with(self._readinto)
 
 #NOTE: this might just be a Packetiser.wrap(StdStreamLink())
