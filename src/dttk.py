@@ -1851,13 +1851,14 @@ class FileReceiver(Receiver):
     """Receive something we know to be a disk file"""
     #NOTE: If you want to receive sensor data, use a Receiver() directly
 
+    FILENAME_BASE = "received"  # adds extn on based on transmitted metadata
+
     def __init__(self, link_manager:LinkManager, filename:str or None, progress_fn:callable or None=None,
                  cached:bool=False):
         #NOTE: cached for Raspberry Pi Pico local filesystem
         #NOTE: uncached for sdcard or host file system
 
         # No metadata received yet
-        self._local_filename = filename # might be None
         self._nblocks        = None
         self._blocksize      = None
         self._lastblock      = None
@@ -1908,6 +1909,7 @@ class FileReceiver(Receiver):
         filename_raw = bytes(data[5+32:-1])  # skip the ZTERM
         filename     = platdeps.decode_to_str(filename_raw)
         filename     = platdeps.os_path_basename(filename)  # no directories allowed
+        _, ext       = platdeps.os_path_splitext(filename)
 
         if self._nblocks is None:
             ##platdeps.message("capturing metadata for file")
@@ -1918,6 +1920,8 @@ class FileReceiver(Receiver):
             self._lastblock        = lastblock
             self._sha256           = sha256
             self._remote_filename  = filename
+            self._local_filename   = self.FILENAME_BASE + ext
+            print("send(%s) -> receive(%s)" % (self._remote_filename, self._local_filename))
 
             # now able to monitor the progress of block transfer
             self.set_block_info(blocksz, nblocks, lastblock)
