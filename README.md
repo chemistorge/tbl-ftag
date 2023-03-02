@@ -22,6 +22,8 @@ please read [host_instructions.md](./host_instructions.md)
 For use on a Raspberry Pi Pico running MicroPython,
 please read [pico_instructions.md](./pico_instructions.md)
 
+For the ```sdtool``` SDCard tester,
+please read [sdtool_instructions.md](./sdtool_instructions.md)
 
 ## What is it for?
 
