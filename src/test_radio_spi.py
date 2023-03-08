@@ -3,33 +3,32 @@
 from machine import SPI, Pin
 from utime import sleep_ms, sleep_us
 
-SPEED_HZ = 400_000
-SPI_N = 0
+RADIO_SPEED_HZ = 400_000
+RADIO_SPI_N    = 0
+RADIO_G0_GPN   = 0  # {GP0}/TX0/SDA0/DIO/PWM0A
+RADIO_CS_GPN   = 1  # {GP1}/RX0/SCL0/CS0/PWM0B
+RADIO_SCK_GPN  = 2  # GP2/SDA1/{SCK0}/PWM1A
+RADIO_MOSI_GPN = 3  # GP3/SCL1/DO0/PWM1B
+RADIO_MISO_GPN = 4  # GP4/TX1/SDA0/{DI0}/PWM2A
+RADIO_RES_GPN  = 6  # {GP6}/SDA1/SCK0/PWM3A
+RADIO_EN_GPN   = 7  # {GP7}/SCL1/DO0/PWM3B
 
-GP_G0 = 0  # input
-GP_CS = 1  # output
-GP_SCK = 2  # output
-GP_MOSI = 3  # output
-GP_MISO = 4  # input
-GP_RES = 6  # output (low for run)
-GP_EN = 7  # output (enable power supply or leave disconnected for on)
-
-spi = SPI(SPI_N, baudrate=SPEED_HZ, polarity=0, phase=0, bits=8,
-          sck=Pin(GP_SCK), mosi=Pin(GP_MOSI), miso=Pin(GP_MISO))
+spi = SPI(RADIO_SPI_N, baudrate=RADIO_SPEED_HZ, polarity=0, phase=0, bits=8,
+          sck=Pin(RADIO_SCK_GPN), mosi=Pin(RADIO_MOSI_GPN), miso=Pin(RADIO_MISO_GPN))
 
 # chip select idles high when bus inactive
-spi_cs = Pin(GP_CS, Pin.OUT)
+spi_cs = Pin(RADIO_CS_GPN, Pin.OUT)
 spi_cs.high()  # deselected
 print("CS idle high")
 
 # reset pin is normally low in normal operation
-res = Pin(GP_RES, Pin.OUT)
+res = Pin(RADIO_RES_GPN, Pin.OUT)
 res.low()
 print("RES idle low")
 
 # EN pin will float high, but experiments show it needs a hard pull up
 # and this turns on the regulator on the RFM69HCW baseboard
-radio_en = Pin(GP_EN, Pin.OUT)
+radio_en = Pin(RADIO_EN_GPN, Pin.OUT)
 radio_en.high()
 print("EN idle high")
 
@@ -56,8 +55,8 @@ def reset():
 def xfer(data: bytes):
     """Use this to send and receive, for register access"""
     print("tx")
-    spi_cs.low()  # select
     res = bytearray(len(data))
+    spi_cs.low()  # select
     spi.write_readinto(data, res)
     spi_cs.high()  # deselect
     print("tx done")
@@ -69,8 +68,8 @@ def readreg(addr: int) -> int:
 
 def test():
     """Use this to test the radio responds"""
-    R_VERSION = 0x10
-    EXPECTED = 0x24
+    R_VERSION = 0x10  # register to read
+    EXPECTED = 0x24   # value to expect back for a PASS
     reset()
     actual = readreg(R_VERSION)
     if EXPECTED != actual:
