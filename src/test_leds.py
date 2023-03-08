@@ -17,26 +17,21 @@ def test_pin(pin_no: int, name:str=None):
         p.low()
         sleep_ms(250)
 
+def flash(pin, name:str="", times:int=4, delay_ms:int=250):
+    for t in range(times):
+        print("%s ON" % name)
+        pin.on()
+        sleep_ms(delay_ms)
+        print("%s OFF" % name)
+        pin.off()
+        sleep_ms(delay_ms)
+
 def test():
     led1 = Pin(LED1_GPN, Pin.OUT)
     led2 = Pin(LED2_GPN, Pin.OUT)
 
-    print("LED1(20) ON")
-    led1.on()
-    sleep_ms(500)
-
-    print("LED1(20) FF")
-    led1.off()
-    sleep_ms(500)
-
-    print("LED2(21) ON")
-    led2.on()
-    sleep_ms(500)
-
-    print("LED2(21) FF")
-    led2.off()
-    sleep_ms(500)
-
+    flash(led1, "LED1(%d)" % LED1_GPN)
+    flash(led2, "LED2(%d)" % LED2_GPN)
 
 print("test_leds program:")
 print("test() - test that both LEDs work")
