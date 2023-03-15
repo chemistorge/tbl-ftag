@@ -25,11 +25,10 @@ at the top of ```sdcard.py``` if you need a different setup. The CD
 (card detect) is not used in this tester.
 
 ```python
-SPI_N    = 1
-GP_SCK   = 10  # output
-GP_MOSI  = 11  # output
-GP_MISO  = 12  # input
-GP_CS    = 13  # output
+GP_SCK   = 10
+GP_MOSI  = 11
+GP_MISO  = 12
+GP_CS    = 13
 ```
 
 ## Running SDTOOL

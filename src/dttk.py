@@ -8,7 +8,8 @@ try:
 except ImportError: pass
 
 import random  # available on host and pico
-import perf
+
+##DISABLEDimport perf
 #IDEA, if don't import it, define perf as a scaffold here
 #and if we do import it, turn it on, always.
 #e.g. import perf or import no_perf as perf
@@ -1220,7 +1221,7 @@ class LinkSender(Link):
                 ##assert False, "SENT EOF PACKET"
                 del buf
 
-    @perf.measure
+    ##@perf.measure
     def add_header_and_send(self, data:Buffer, channel:int=LinkMessage.LINKCH, blockno:int=0) -> None:
         """Wrap and send any data to any channel"""
         # length byte not included in length byte
@@ -1332,7 +1333,7 @@ class LinkReceiver(Link):
         buf.rtrunc(FBYTES)
         return len(buf)
 
-    @perf.measure
+    ##@perf.measure
     def get_next_packet_into(self, buf:Buffer, info:dict or None=None, wait:int=0) -> int or None:
         """Receive and validate a link layer message (but don't fully decode)"""
         nb = self._link.recvinto(buf, info, wait=wait)
