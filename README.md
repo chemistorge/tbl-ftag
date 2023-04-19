@@ -1,4 +1,4 @@
-# File Transfer Agent (FTAG)
+# File Transfer Agent (FTAG) - for host and pico use
 
 Note, for those following along at home. This code is currently being significantly
 re-optimised to get good performance within MicroPython on a Raspberry Pi Pico.
