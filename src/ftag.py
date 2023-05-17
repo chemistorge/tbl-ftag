@@ -36,9 +36,10 @@ def help() -> None:
 
 #Throttled send, by default.
 DEFAULT_PPS = 40  # experimental evidence shows this keeps a 512+32 receive ok
-def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS) -> None:
+def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS, progress=None) -> None:
+    #TODO: throttling should be an option in sender, so loopback can use it too
     print("sending:%s" % filename)
-    sender = send_file_task(filename)
+    sender = send_file_task(filename, progress=progress)
     if pps is not None:
         print("  throttled at %d PPS" % pps)
         while True:
@@ -54,19 +55,20 @@ def send(filename:str=TX_FILENAME, pps:int=DEFAULT_PPS) -> None:
     print_stats("tx", sender)
     print("send complete")
 
-def receive(filename:str=RX_FILENAME) -> None:
+def receive(filename:str=RX_FILENAME, progress=None) -> None:
     print("receiving:%s" % filename)
-    receiver = receive_file_task(filename)
+    receiver = receive_file_task(filename, progress=progress)
     receiver.run()
 
     print_stats("rx", receiver)
 
     print("receive complete")
 
-def loopback(tx_filename:str=TX_FILENAME, rx_filename:str=RX_FILENAME) -> None:
+def loopback(tx_filename:str=TX_FILENAME, rx_filename:str=RX_FILENAME,
+             tx_progress=None, rx_progress=None) -> None:
     print("loopback %s->%s running" % (tx_filename, rx_filename))
-    sender   = send_file_task(tx_filename)
-    receiver = receive_file_task(rx_filename)
+    sender   = send_file_task(tx_filename, progress=tx_progress)
+    receiver = receive_file_task(rx_filename, progress=rx_progress)
 
     tasking.run_all([sender, receiver])
 

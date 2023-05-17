@@ -32,17 +32,19 @@ def rx_progress(msg:str or None=None, value:int or None=None) -> None:
 
 
 #----- TRANSFER TASKS ----------------------------------------------------------
-def send_file_task(filename:str, link=None) -> dttk.Sender: # or exception
+def send_file_task(filename:str, link=None, progress=None) -> dttk.Sender: # or exception
     """Non-blocking sender for a single file (as a task that has a tick())"""
     if link is None: link = default_link_manager
-    return dttk.FileSender(filename, link, progress_fn=tx_progress, blocksz=50)
+    if progress is None: progress=tx_progress
+    return dttk.FileSender(filename, link, progress_fn=progress, blocksz=50)
 
-def receive_file_task(filename:str, link=None) -> dttk.Receiver: # or exception
+def receive_file_task(filename:str, link=None, progress=None) -> dttk.Receiver: # or exception
     """Non-blocking receiver"""
     if link is None: link = default_link_manager
     #NOTE: cached mode is off on host, as there is no interference between the
     #file system and interupts on host
-    return dttk.FileReceiver(link, filename, progress_fn=rx_progress, cached=False)
+    if progress is None: progress = rx_progress
+    return dttk.FileReceiver(link, filename, progress_fn=progress, cached=False)
 
 #NOTE: TO FIX
 # def receive_file_noisy_task(filename:str) -> None: # or exception
