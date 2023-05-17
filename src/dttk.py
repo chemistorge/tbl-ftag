@@ -1478,6 +1478,8 @@ class Sender:
     # This is the base of all senders, it can send anything that offers a reader() fn,
     # including byte arrays from sensors, and files in the filing system.
 
+    PROGRESS_RATE = 0.1  # max update rate in seconds
+
     def __init__(self, reader_fn:callable, link:Link, progress_fn:callable or None=None,
                  blocksz:int=16, repeats:int=0):
         self._reader_fn = reader_fn
@@ -1571,9 +1573,9 @@ class Sender:
 
         self._stats.update(len_data)
         if self._progress_fn:
-            # Throttled update rate
+            # Throttle the max update rate
             now = platdeps.time_time()
-            if now-self._last_stats >= 1:
+            if now-self._last_stats >= self.PROGRESS_RATE:
                 self.print_stats()
                 self._last_stats = now
 
@@ -1604,6 +1606,8 @@ class Receiver:
     _STATE_VERIFYING     = 3    # blockmap complete, verify and FINISHED(OK or ERR)
     _STATE_FINISHED_OK   = 4
     _STATE_FINISHED_ERR  = 5
+
+    PROGRESS_RATE = 0.1  # max update rate in seconds
 
     def __init__(self, link:Link, writer_fn:callable, progress_fn:callable or None=None):
         self._link      = link
@@ -1718,9 +1722,9 @@ class Receiver:
         # account for new received data
         self._stats.update(len(data))
         if self._progress_fn:
-            # throttle the update rate
+            # Throttle the max update rate
             now = platdeps.time_time()
-            if now - self._last_stats >= 1:
+            if now - self._last_stats >= self.PROGRESS_RATE:
                 self.print_stats()
                 self._last_stats = now
 

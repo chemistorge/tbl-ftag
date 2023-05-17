@@ -144,21 +144,6 @@ For more detailed instructions about ```sdtool``` see:
 
 # File Transfer Tests
 
-## loading code to both Picos
-
-Install the rshell utility
-
-```bash
-pip3 install rshell
-```
-
-Connect both Picos via USB to your computer, then use the provided script to
-copy all the right files onto (all) connected Pico devices.
-
-```bash
-./load_pico
-```
-
 For these tests, you might have multiple links configured. If this is the case,
 when you import the ftag module, you might get this message, in which case,
 choose the U option for the UART link (as radio.py isn't released yet).
@@ -171,6 +156,24 @@ OPTION=1
 ```
 
 ## UART loopback test
+
+Test Purpose: test that the file transfer works over a UART on same device
+
+Files Needed:
+```python
+platdeps.py
+myboard.py
+dttk.py
+ftag.py
+ftag_pico.py
+perf.py
+tasking.py
+radio.py
+test35k.jpg
+testdata.txt
+```
+
+Test Procedure:
 
 Short pins 1 and 2 on Pico (UART0_TX -> UART0_RX)
 
@@ -187,7 +190,26 @@ ftag.loopback()
 
 ## UART transfer between two Pico's
 
+Test Purpose: Test that you can transfer a file over a wire between two Pico devices
+
+Files Needed:
+```python
+platdeps.py
+myboard.py
+dttk.py
+ftag.py
+ftag_pico.py
+perf.py
+tasking.py
+radio.py
+test35k.jpg
+testdata.txt
+```
+
+Test Procedure:
+
 Connect PicoA(sender) Pin1 to PicoB(receiver) Pin2
+
 Connect PicoA(sender) GND-Pin38 to PicoB(receiver) GND-Pin38
 
 NOTE: best to start the receiver, before you start the sender.
@@ -199,6 +221,8 @@ send() to get the remaining blocks.
 # use Thonny, or putty, or on mac/linux, use 'screen' command
 # on Pico B (receiver)
 import ftag
+  OPTION=0
+  [U]ART or [R]adio [UR]? U
 ftag.receive()
 ```
 
@@ -206,10 +230,113 @@ ftag.receive()
 # use Thonny, or putty, or on mac/linux, use 'screen' command
 # on Pico A (sender)
 import ftag
+  OPTION=1
+  [U]ART or [R]adio [UR]? U
 ftag.send()
 ```
 
-## Load the transferred image onto your host PC (using rshell)
+## Radio transfer beween two Pico devices
+
+Test Purpose: Transfer a JPG image wirelessly between two pico devices
+
+Files Needed:
+```python
+platdeps.py
+myboard.py
+dttk.py
+ftag.py
+ftag_pico.py
+perf.py
+tasking.py
+radio.py
+test35k.jpg
+testdata.txt
+```
+
+Test Procedure:
+
+When first importing ftag from boot, choose the R option on both Pico's
+and make sure the radio has previously passed the test_spi_radio and
+test_radio tests.
+
+Run a file transfer at both ends, like this:
+
+Start the receiver first...
+
+```python
+# use Thonny, or putty, or on mac/linux, use 'screen' command
+# on Pico B (receiver)
+import ftag
+  OPTION=0
+  [U]ART or [R]adio [UR]? R
+ftag.receive()
+```
+
+Then start the sender...
+
+```python
+# use Thonny, or putty, or on mac/linux, use 'screen' command
+# on Pico A (sender)
+import ftag
+  OPTION=1
+  [U]ART or [R]adio [UR]? R
+ftag.send()
+```
+
+The transfer takes a little more than a minute in normal circumstances.
+When the sender has finished the transfer, you should now see a file on
+the receiver pico filing system called 'received.jpg'.
+
+```
+finished_ok:files identical:received.jpg                                       
+STATS:rx
+link: tot:2726 badlen:0 shorthdr:1 long:0 seqno:125 crc:10
+xfer: T:77 blk:695 by:34710 PPS:9 BPS:450
+receive complete
+```
+
+```python
+import os
+os.listdir()
+["received.jpg", ...]
+```
+
+NOTE: If the transfer receives too many damaged packets, the sender will
+stop but the receiver will stay waiting - at this point if you just
+re-start the sender again, the receiver will re-sync and collect any
+packets that it missed the first time round.
+
+NOTE 2: The file transfer currently stores the file in RAM, so don't
+power off your receiver or stop the program, and you will then be able
+to use the resume feature at the sender to get the missing blocks
+transferred.
+
+Use whatever method works for you, to transfer this received.jpg from the 
+receiver Pico onto your host computer. Use an image viewing program
+on your host computer to verify that you have received the image intact.
+
+
+# Tips and tricks
+
+## TIP: loading code to both Picos
+
+If you are able to install code on your machine, this is a faster way to
+get all files onto both Pico devices:
+
+Install the rshell utility
+
+```bash
+pip3 install rshell
+```
+
+Connect both Picos via USB to your computer, then use the provided script to
+copy all the right files onto (all) connected Pico devices.
+
+```bash
+./load_pico
+```
+
+## TIP: Load the transferred image onto your host PC (using rshell)
 
 ```bash
 rshell
@@ -217,31 +344,5 @@ cp /pyboard/received.jpg .
 exit
 
 open received.jpg  # should open and display the image on host PC
-```
-
-## Radio testing
-
-If you have access to our radio.py module, make sure that is also loaded
-onto both Pico's
-
-When first importing ftag from boot, choose the R option on both Pico's
-and make sure the radio has previously passed the test_spi_radio and
-test_radio tests.
-
-Run a file transfer as per the UART tests, like this:
-
-```python
-# use Thonny, or putty, or on mac/linux, use 'screen' command
-# on Pico B (receiver)
-import ftag
-ftag.receive()
-```
-
-```python
-# use Thonny, or putty, or on mac/linux, use 'screen' command
-# use Thonny, or putty, or on mac/linux, use 'screen' command
-# on Pico A (sender)
-import ftag
-ftag.send()
 ```
 

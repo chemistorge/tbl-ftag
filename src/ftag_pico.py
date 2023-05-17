@@ -188,15 +188,17 @@ def rx_progress(msg:str or None=None, value:int or None=None) -> None:
 
 
 #----- TRANSFER TASKS ----------------------------------------------------------
-def send_file_task(filename:str) -> dttk.Sender: # or exception
+def send_file_task(filename:str, progress=None) -> dttk.Sender: # or exception
     """Non-blocking sender for a single file (as a task that has a tick())"""
-    return dttk.FileSender(filename, link_manager, progress_fn=tx_progress, blocksz=myboard.UartCfg.BLOCK_SIZE)
+    if progress is None: progress = tx_progress
+    return dttk.FileSender(filename, link_manager, progress_fn=progress, blocksz=myboard.UartCfg.BLOCK_SIZE)
 
-def receive_file_task(filename:str) -> dttk.Receiver: # or exception
+def receive_file_task(filename:str, progress=None) -> dttk.Receiver: # or exception
     """Non-blocking receiver"""
     #NOTE: cached=True is required for Pico local fs due to interrupts disabled on write
     #NOTE2: if you are using an sdcard, you can set cached=False, for immediate writes
-    return dttk.FileReceiver(link_manager, filename, progress_fn=rx_progress, cached=True)
+    if progress is None: progress=rx_progress
+    return dttk.FileReceiver(link_manager, filename, progress_fn=progress, cached=True)
 
 #NOTE: TO FIX
 # def receive_file_noisy_task(filename:str) -> None: # or exception
